@@ -3,3 +3,14 @@ dist/
 test-results/
 .playwright-mcp/
 *.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Environment
+.env

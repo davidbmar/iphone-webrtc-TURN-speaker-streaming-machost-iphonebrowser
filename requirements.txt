@@ -1,0 +1,5 @@
+aiohttp>=3.9,<4
+aiortc>=1.9,<2
+numpy>=1.24
+python-dotenv>=1.0
+av>=12.0

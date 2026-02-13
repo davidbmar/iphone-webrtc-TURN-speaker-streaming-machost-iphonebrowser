@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>WebRTC Speaker</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="container">
+    <h1>WebRTC Speaker</h1>
+
+    <!-- Connection Section -->
+    <div class="section" id="connect-section">
+        <h2>Connect</h2>
+        <div class="status">
+            <span class="status-dot" id="ws-dot"></span>
+            <span id="ws-status">Disconnected</span>
+        </div>
+        <label for="token-input">Auth Token</label>
+        <input type="password" id="token-input" placeholder="Enter token" value="">
+        <button class="btn-primary" id="connect-btn">Connect</button>
+    </div>
+
+    <!-- Voice + Controls Section (shown after connect) -->
+    <div class="section hidden" id="controls-section">
+        <h2>Voice Stream</h2>
+        <div class="status">
+            <span class="status-dot" id="rtc-dot"></span>
+            <span id="rtc-status">WebRTC not started</span>
+        </div>
+        <label for="voice-select">Voice</label>
+        <select id="voice-select" disabled>
+            <option value="">-- connect first --</option>
+        </select>
+        <div class="btn-row">
+            <button class="btn-success" id="start-btn" disabled>Start</button>
+            <button class="btn-danger" id="stop-btn" disabled>Stop</button>
+        </div>
+    </div>
+
+    <!-- Debug Log -->
+    <div class="section">
+        <h2>Debug Log</h2>
+        <div id="debug-log"></div>
+    </div>
+</div>
+
+<!-- Config injected by server -->
+<script>
+    // Replaced at serve-time by gateway/server.py
+    window.__CONFIG__ = __ICE_SERVERS_PLACEHOLDER__;
+</script>
+<script src="/static/app.js"></script>
+</body>
+</html>

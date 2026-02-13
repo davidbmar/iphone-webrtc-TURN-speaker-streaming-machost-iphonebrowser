@@ -1,112 +1,158 @@
-# Iris Kade
+# WebRTC + TURN Speaker Streaming
 
-Noir-cyberpunk conversational AI — runs entirely in your browser. Zero network calls.
-
-![Live Demo](docs/screenshots/live-demo.png)
-
-## What is this?
-
-Iris Kade is a fully local conversational AI that runs 100% in the browser using WebGPU.
-No API keys, no cloud services, no data leaves your machine. Talk to a noir-cyberpunk
-security specialist who teaches defense — opsec, privacy, encryption, threat modeling.
-
-## Features
-
-- **Local LLM inference** via [web-llm](https://github.com/mlc-ai/web-llm) — 17+ models from 80MB to 5GB
-- **Multi-lane RAG pipeline** — persona, playbook, knowledge, and lore retrieval with vector + lexical reranking
-- **Streaming text-to-speech** — concurrent sentence generation + playback via [vits-web](https://github.com/niclas-niclasen/vits-web) (ONNX/WASM)
-- **Speech-to-text** — Web Speech API for hands-free conversation
-- **4-state conversation FSM** — IDLE → PROCESSING → SPEAKING → INTERRUPTED with clean abort handling
-- **Adaptive conversation bias** — verbosity, depth, and warmth adjust to your communication style
-- **Pack-only mode** — instant responses from the conversation pack without loading an LLM
-- **Built-in diagnostic test harness** — one-click conversation testing with detailed per-turn analysis
+Stream generated audio from a Mac host to an iPhone browser client via WebRTC, with TURN relay support for NAT traversal.
 
 ## Architecture
 
 ```
-┌─────────┐    ┌─────────┐    ┌──────────────┐    ┌──────────┐
-│   STT   │───▶│   FSM   │───▶│   Pipeline   │───▶│   LLM    │
-│ Web API │    │ 4-state │    │  StateGate   │    │ web-llm  │
-└─────────┘    └────┬────┘    │  Retrieve    │    │ WebGPU   │
-                    │         │  Rerank      │    └────┬─────┘
-                    │         │  Compose     │         │
-                    │         └──────────────┘         │
-                    │                              ┌───▼────────┐
-                    │                              │  Sentence   │
-                    │                              │  Buffer     │
-                    │                              └───┬────────┘
-                    │         ┌──────────┐             │
-                    └────────◀│  Speaker  │◀────────────┘
-                              │ vits-web  │
-                              │ TTS+Audio │
-                              └──────────┘
+┌──────────────────────────────────────────────────────┐
+│  Mac Host                                            │
+│                                                      │
+│  ┌────────────┐    ┌───────────────────────────────┐ │
+│  │   Engine    │    │          Gateway              │ │
+│  │            │    │                               │ │
+│  │ SineWave / │───▶│  aiohttp server (:8080)       │ │
+│  │ TTS gen    │    │  ├─ GET /  → index.html       │ │
+│  │            │    │  ├─ GET /ws → WebSocket        │ │
+│  └────────────┘    │  │    ├─ hello / hello_ack    │ │
+│                    │  │    ├─ webrtc_offer/answer   │ │
+│                    │  │    └─ start / stop          │ │
+│                    │  │                             │ │
+│                    │  └─ RTCPeerConnection          │ │
+│                    │     └─ AudioTrack (Opus 48kHz) │ │
+│                    └───────────────────────────────┘ │
+└──────────────────────┬───────────────────────────────┘
+                       │  WebRTC (UDP)
+                       │  via TURN relay or direct
+                       │
+┌──────────────────────▼───────────────────────────────┐
+│  iPhone Safari                                       │
+│                                                      │
+│  ┌───────────────────────────────────────────────┐   │
+│  │  web/app.js                                   │   │
+│  │  ├─ WebSocket signaling                       │   │
+│  │  ├─ RTCPeerConnection (recvonly)              │   │
+│  │  └─ <audio> element playback                  │   │
+│  └───────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────┘
 ```
 
-The conversation FSM owns the turn lifecycle. User input (typed or spoken) triggers a transition from IDLE → PROCESSING. The multi-lane RAG pipeline composes context from persona, playbook, knowledge, and lore lanes. The LLM streams tokens through a sentence buffer, which feeds sentences to the TTS speaker for concurrent generation and playback. Interrupting resets everything cleanly.
+## Signaling Protocol (WebSocket JSON)
+
+```
+Client                          Server
+  │                               │
+  │─── hello {token} ───────────▶│   Auth check
+  │◀── hello_ack {voices} ───────│   Voice list
+  │                               │
+  │─── webrtc_offer {sdp} ──────▶│   Set remote, create answer
+  │◀── webrtc_answer {sdp} ──────│   ICE candidates bundled in SDP
+  │                               │
+  │─── start {voice_id} ────────▶│   Begin audio generation
+  │─── stop ─────────────────────▶│   Stop audio generation
+  │                               │
+  │─── ping ─────────────────────▶│   Keepalive
+  │◀── pong ──────────────────────│
+```
+
+**Key constraint**: aiortc does NOT support trickle ICE. All ICE candidates are bundled into the SDP answer. The client waits for ICE gathering to complete before sending its offer.
+
+## Project Structure
+
+```
+├── engine/                  # Audio generation layer
+│   ├── types.py             # VoiceInfo, AudioChunk dataclasses
+│   └── adapter.py           # list_voices(), SineWaveGenerator
+│
+├── gateway/                 # Server + WebRTC layer
+│   ├── server.py            # aiohttp HTTP + WS server
+│   ├── webrtc.py            # Session, RTCPeerConnection lifecycle
+│   └── audio/
+│       ├── pcm_ring_buffer.py        # Thread-safe ring buffer
+│       └── webrtc_audio_source.py    # Custom MediaStreamTrack
+│
+├── web/                     # Browser client
+│   ├── index.html           # Mobile-friendly UI
+│   ├── app.js               # WS signaling + WebRTC + playback
+│   └── styles.css           # Mobile CSS with large touch targets
+│
+├── web-app/                 # Iris Kade (existing, untouched)
+│
+├── requirements.txt         # Python dependencies
+├── .env.example             # Environment variable template
+└── README.md                # This file
+```
+
+## Milestones
+
+| # | Goal | Acceptance |
+|---|------|------------|
+| 1 | Gateway + Signaling | Open localhost:8080, enter token, see voices list |
+| 2 | WebRTC Negotiation | Offer/answer exchange, ICE completes, "WebRTC connected" in UI |
+| 3 | Sine Wave Streaming | Click Start → hear tone, Stop → silence, switch voice → different frequency |
+| 4 | Real TTS (future) | Replace sine wave with actual TTS engine output |
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/<your-username>/speaker-generation-version-1.git
-cd speaker-generation-version-1/web-app
-npm install
-npm run dev
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Create .env from template
+cp .env.example .env
+# Edit .env to set AUTH_TOKEN and optionally ICE_SERVERS_JSON
+
+# Run the server
+python -m gateway.server
+
+# Open in browser
+open http://localhost:8080
 ```
 
-Open [http://localhost:5173](http://localhost:5173) — select a model from the dropdown and start talking.
+### Testing from iPhone
 
-> **Requirements:** A browser with WebGPU support (Chrome 113+, Edge 113+). Larger models need more VRAM.
+1. Ensure Mac and iPhone are on the same Wi-Fi network
+2. Find your Mac's IP: `ipconfig getifaddr en0`
+3. Open `http://<mac-ip>:8080` in Safari on iPhone
+4. Enter the auth token and tap Connect
+5. Select a voice and tap Start
 
-## Supported Models
+For connections across different networks, configure TURN servers via `ICE_SERVERS_JSON`.
 
-| Model | Size | VRAM | Tags |
-|-------|------|------|------|
-| SmolLM2 135M | ~80MB | 0.3 GB | fast, mobile |
-| SmolLM2 360M | ~200MB | 0.5 GB | fast, mobile |
-| Qwen3 0.6B | ~400MB | 0.6 GB | fast, mobile, reasoning |
-| Llama 3.2 1B | ~600MB | 0.8 GB | fast, balanced |
-| Qwen2.5 1.5B | ~900MB | 1.0 GB | balanced |
-| Qwen3 1.7B | ~1GB | 1.2 GB | balanced, reasoning |
-| SmolLM2 1.7B | ~1GB | 1.2 GB | balanced |
-| Gemma 2 2B | ~1.2GB | 1.4 GB | balanced |
-| Llama 3.2 3B | ~1.8GB | 2.0 GB | balanced, smart |
-| Phi 3.5 Mini | ~2.2GB | 2.5 GB | smart, balanced |
-| Qwen3 4B | ~2.5GB | 2.8 GB | smart, reasoning |
-| Qwen2.5 7B | ~4.5GB | 4.5 GB | smart |
-| Qwen3 8B | ~5GB | 5.0 GB | smart, reasoning |
-| Llama 3.1 8B | ~5GB | 5.0 GB | smart |
-| DeepSeek R1 7B | ~4.5GB | 4.5 GB | reasoning, smart |
-| Qwen2.5 Coder 1.5B | ~900MB | 1.0 GB | code, balanced |
-| Qwen2.5 Coder 7B | ~4.5GB | 4.5 GB | code, smart |
+## Environment Variables
 
-Or use **Pack-only mode** for instant responses without downloading any model.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8080` | Server listen port |
+| `AUTH_TOKEN` | `devtoken` | Token required in `hello` message |
+| `ICE_SERVERS_JSON` | `[]` | JSON array of ICE server configs for TURN/STUN |
 
-## Screenshots
+### ICE Server Configuration
 
-| Initial UI | Diagnostic Complete | Opsec Response |
-|:---:|:---:|:---:|
-| ![Initial](docs/screenshots/diagnostic-initial.png) | ![Complete](docs/screenshots/diagnostic-complete.png) | ![Opsec](docs/screenshots/opsec-response.png) |
+```bash
+# .env example with TURN server
+ICE_SERVERS_JSON='[{"urls":"turn:your-server.com:3478","username":"user","credential":"pass"}]'
+```
 
-| History View | Turn Detail | Token Cap |
-|:---:|:---:|:---:|
-| ![History](docs/screenshots/history-view.png) | ![Turn](docs/screenshots/turn-detail.png) | ![Token](docs/screenshots/token-cap-512.png) |
+## Key Technical Decisions
 
-## Roadmap
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Server framework | aiohttp + aiortc | Most mature Python server-side WebRTC |
+| Audio sample rate | 48 kHz | Opus codec native rate, no resampling |
+| Frame size | 960 samples (20 ms) | Matches aiortc `AUDIO_PTIME` |
+| ICE strategy | Client waits for gathering complete | aiortc has no trickle ICE |
+| Config delivery | `window.__CONFIG__` in HTML | No extra fetch, client has ICE servers immediately |
+| Auth | Token in WS `hello` message | Simple, avoids HTTP header complexity |
+| Audio playback | `<audio>` element | Simplest iOS Safari compatibility |
 
-See the [backlog](docs/project-memory/backlog/README.md) for tracked features:
+## iOS Safari Notes
 
-- [F-001: Phone remote client](docs/project-memory/backlog/F-001-phone-remote-client.md) — WebSocket thin client for mobile
-- [F-002: Fast-think / slow-think](docs/project-memory/backlog/F-002-fast-slow-think.md) — dual-LLM architecture for instant + deep responses
+- Audio autoplay is blocked until a user gesture — the Start button click triggers `audio.play()`
+- Uses `<audio>` element (not AudioContext) for maximum mobile compatibility
+- CSS uses large touch targets (min 44px) for iPhone usability
+- `playsinline` attribute is required for inline audio on iOS
 
-## Tech Stack
+## Existing: Iris Kade Web App
 
-- **Build:** [Vite](https://vitejs.dev/) + TypeScript (vanilla, no framework)
-- **LLM:** [@mlc-ai/web-llm](https://github.com/mlc-ai/web-llm) (WebGPU inference)
-- **Embeddings:** [@huggingface/transformers](https://huggingface.co/docs/transformers.js) with `Xenova/all-MiniLM-L6-v2` (384-dim, WebGPU/WASM)
-- **TTS:** [@diffusionstudio/vits-web](https://github.com/niclas-niclasen/vits-web) (ONNX/WASM)
-- **STT:** Web Speech API
-- **Tests:** [Playwright](https://playwright.dev/) E2E
-
-## License
-
-MIT
+The `web-app/` directory contains the original Iris Kade conversational AI — a fully local browser-based system using WebGPU. It is independent of the WebRTC streaming system. See `web-app/` for its own documentation.
