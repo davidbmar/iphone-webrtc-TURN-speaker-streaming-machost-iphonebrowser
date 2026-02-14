@@ -13,10 +13,8 @@ const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
 const debugLog = document.getElementById("debug-log");
 
-// --- Config injected by server ---
-const iceServers = window.__CONFIG__ || [];
-
 // --- State ---
+let iceServers = window.__CONFIG__ || [];
 let ws = null;
 let pc = null;
 let audioEl = null;
@@ -84,6 +82,11 @@ function handleMessage(msg) {
     switch (msg.type) {
         case "hello_ack":
             log("Authenticated! Received " + msg.voices.length + " voices", "success");
+            // Use TURN credentials from server (Twilio) if provided
+            if (msg.ice_servers && msg.ice_servers.length > 0) {
+                iceServers = msg.ice_servers;
+                log("Got " + iceServers.length + " ICE servers from server", "success");
+            }
             setWsState("connected");
             populateVoices(msg.voices);
             controlsSection.classList.remove("hidden");

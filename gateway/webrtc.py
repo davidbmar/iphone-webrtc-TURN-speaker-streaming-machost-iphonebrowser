@@ -12,18 +12,11 @@ from gateway.audio.webrtc_audio_source import WebRTCAudioSource
 log = logging.getLogger("webrtc")
 
 
-def parse_ice_servers() -> list:
-    """Parse ICE_SERVERS_JSON env var into RTCIceServer objects."""
-    raw = os.getenv("ICE_SERVERS_JSON", "[]")
-    try:
-        servers = json.loads(raw)
-    except json.JSONDecodeError:
-        log.warning("Invalid ICE_SERVERS_JSON, using empty list")
-        return []
-
+def ice_servers_to_rtc(servers: list) -> list:
+    """Convert ICE server dicts to RTCIceServer objects."""
     result = []
     for s in servers:
-        urls = s.get("urls", "")
+        urls = s.get("urls", s.get("url", ""))
         if isinstance(urls, str):
             urls = [urls]
         result.append(RTCIceServer(
@@ -37,9 +30,9 @@ def parse_ice_servers() -> list:
 class Session:
     """Manages one WebRTC peer connection and its audio track."""
 
-    def __init__(self):
-        ice_servers = parse_ice_servers()
-        config = RTCConfiguration(iceServers=ice_servers) if ice_servers else RTCConfiguration()
+    def __init__(self, ice_servers: list = None):
+        rtc_servers = ice_servers_to_rtc(ice_servers or [])
+        config = RTCConfiguration(iceServers=rtc_servers) if rtc_servers else RTCConfiguration()
         self._pc = RTCPeerConnection(configuration=config)
         self._audio_source = WebRTCAudioSource()
         self._generator = None

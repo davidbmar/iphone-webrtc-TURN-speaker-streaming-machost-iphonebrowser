@@ -2,7 +2,9 @@
 
 Stream generated audio from a Mac host to an iPhone browser client via WebRTC, with TURN relay support for NAT traversal.
 
-![WebRTC Speaker — Connected](docs/screenshots/webrtc-speaker-connected.png)
+| Initial | Connected (TURN) | Streaming |
+|:---:|:---:|:---:|
+| ![Initial](docs/screenshots/01-initial.png) | ![Connected](docs/screenshots/02-connected-turn.png) | ![Streaming](docs/screenshots/03-streaming.png) |
 
 ## Architecture
 
@@ -39,13 +41,32 @@ Stream generated audio from a Mac host to an iPhone browser client via WebRTC, w
 └──────────────────────────────────────────────────────┘
 ```
 
+### NAT Traversal with TURN
+
+When the server is behind NAT (e.g. a home Mac), direct WebRTC UDP connections from remote clients will fail. A TURN relay solves this:
+
+```
+iPhone (cellular)                    Twilio TURN                    Mac (behind NAT)
+       │                                │                                │
+       │── STUN discover public IP ────▶│                                │
+       │◀── relay candidate ────────────│                                │
+       │                                │◀── STUN discover public IP ────│
+       │                                │── relay candidate ────────────▶│
+       │                                │                                │
+       │◀═══════ WebRTC audio (UDP) ═══▶│◀═══════ WebRTC audio (UDP) ══▶│
+       │         via TURN relay         │         via TURN relay         │
+```
+
+The server fetches ephemeral TURN credentials from Twilio on each connection and sends them to the client in the `hello_ack` message. Both sides use these credentials for ICE negotiation.
+
 ## Signaling Protocol (WebSocket JSON)
 
 ```
 Client                          Server
   │                               │
   │─── hello {token} ───────────▶│   Auth check
-  │◀── hello_ack {voices} ───────│   Voice list
+  │◀── hello_ack {voices,        │   Voice list + TURN creds
+  │     ice_servers} ─────────────│
   │                               │
   │─── webrtc_offer {sdp} ──────▶│   Set remote, create answer
   │◀── webrtc_answer {sdp} ──────│   ICE candidates bundled in SDP
@@ -69,6 +90,7 @@ Client                          Server
 ├── gateway/                 # Server + WebRTC layer
 │   ├── server.py            # aiohttp HTTP + WS server
 │   ├── webrtc.py            # Session, RTCPeerConnection lifecycle
+│   ├── turn.py              # Twilio TURN credential fetching
 │   └── audio/
 │       ├── pcm_ring_buffer.py        # Thread-safe ring buffer
 │       └── webrtc_audio_source.py    # Custom MediaStreamTrack
@@ -87,12 +109,13 @@ Client                          Server
 
 ## Milestones
 
-| # | Goal | Acceptance |
-|---|------|------------|
-| 1 | Gateway + Signaling | Open localhost:8080, enter token, see voices list |
-| 2 | WebRTC Negotiation | Offer/answer exchange, ICE completes, "WebRTC connected" in UI |
-| 3 | Sine Wave Streaming | Click Start → hear tone, Stop → silence, switch voice → different frequency |
-| 4 | Real TTS (future) | Replace sine wave with actual TTS engine output |
+| # | Goal | Status | Acceptance |
+|---|------|--------|------------|
+| 1 | Gateway + Signaling | Done | Open localhost:8080, enter token, see voices list |
+| 2 | WebRTC Negotiation | Done | Offer/answer exchange, ICE completes, "WebRTC connected" in UI |
+| 3 | Sine Wave Streaming | Done | Click Start → hear tone, Stop → silence, switch voice → different frequency |
+| 3b | TURN Relay Support | Done | Twilio TURN credentials, relay ICE candidates, works over cellular |
+| 4 | Real TTS (future) | — | Replace sine wave with actual TTS engine output |
 
 ## Quick Start
 
@@ -102,24 +125,42 @@ pip install -r requirements.txt
 
 # Create .env from template
 cp .env.example .env
-# Edit .env to set AUTH_TOKEN and optionally ICE_SERVERS_JSON
+# Edit .env to set AUTH_TOKEN and Twilio credentials
 
 # Run the server
-python -m gateway.server
+python3 -m gateway.server
 
 # Open in browser
 open http://localhost:8080
 ```
 
-### Testing from iPhone
+### Testing from iPhone (same Wi-Fi)
 
-1. Ensure Mac and iPhone are on the same Wi-Fi network
-2. Find your Mac's IP: `ipconfig getifaddr en0`
-3. Open `http://<mac-ip>:8080` in Safari on iPhone
-4. Enter the auth token and tap Connect
-5. Select a voice and tap Start
+1. Find your Mac's IP: `ipconfig getifaddr en0`
+2. Open `http://<mac-ip>:8080` in Safari on iPhone
+3. Enter the auth token and tap Connect
+4. Select a voice and tap Start
 
-For connections across different networks, configure TURN servers via `ICE_SERVERS_JSON`.
+### Testing from iPhone (cellular / remote)
+
+Your Mac is behind NAT, so remote clients need two things:
+- **Cloudflare Tunnel** — for the web page and WebSocket signaling
+- **Twilio TURN** — for WebRTC audio relay
+
+```bash
+# Terminal 1: run the server
+python3 -m gateway.server
+
+# Terminal 2: expose via Cloudflare Tunnel
+cloudflared tunnel --url http://localhost:8080 --protocol http2
+# Gives you: https://random-name.trycloudflare.com
+```
+
+On your iPhone (Wi-Fi off, cellular only):
+1. Open the `https://...trycloudflare.com` URL in Safari
+2. Enter the auth token, tap Connect
+3. Debug log should show **relay** ICE candidates (TURN working)
+4. Select a voice, tap Start — hear the tone over cellular
 
 ## Environment Variables
 
@@ -127,14 +168,20 @@ For connections across different networks, configure TURN servers via `ICE_SERVE
 |----------|---------|-------------|
 | `PORT` | `8080` | Server listen port |
 | `AUTH_TOKEN` | `devtoken` | Token required in `hello` message |
-| `ICE_SERVERS_JSON` | `[]` | JSON array of ICE server configs for TURN/STUN |
+| `TWILIO_ACCOUNT_SID` | — | Twilio Account SID (for TURN credentials) |
+| `TWILIO_AUTH_TOKEN` | — | Twilio Auth Token (for TURN credentials) |
+| `ICE_SERVERS_JSON` | `[]` | Manual ICE server fallback (used if Twilio not configured) |
 
-### ICE Server Configuration
+### Twilio TURN Setup
 
-```bash
-# .env example with TURN server
-ICE_SERVERS_JSON='[{"urls":"turn:your-server.com:3478","username":"user","credential":"pass"}]'
-```
+1. Sign up at https://www.twilio.com
+2. Get **Account SID** and **Auth Token** from the [console dashboard](https://www.twilio.com/console)
+3. Add to `.env`:
+   ```
+   TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+   TWILIO_AUTH_TOKEN=your_auth_token_here
+   ```
+4. The server auto-fetches ephemeral TURN/STUN credentials on each connection (24hr TTL)
 
 ## Key Technical Decisions
 
@@ -144,9 +191,10 @@ ICE_SERVERS_JSON='[{"urls":"turn:your-server.com:3478","username":"user","creden
 | Audio sample rate | 48 kHz | Opus codec native rate, no resampling |
 | Frame size | 960 samples (20 ms) | Matches aiortc `AUDIO_PTIME` |
 | ICE strategy | Client waits for gathering complete | aiortc has no trickle ICE |
-| Config delivery | `window.__CONFIG__` in HTML | No extra fetch, client has ICE servers immediately |
+| TURN credentials | Twilio NTS, fetched per-connection | Ephemeral creds, no static secrets in client |
 | Auth | Token in WS `hello` message | Simple, avoids HTTP header complexity |
 | Audio playback | `<audio>` element | Simplest iOS Safari compatibility |
+| Remote access | Cloudflare Tunnel | Free, no domain needed, handles HTTPS + WSS |
 
 ## iOS Safari Notes
 
