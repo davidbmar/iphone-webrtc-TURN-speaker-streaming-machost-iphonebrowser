@@ -14,6 +14,9 @@ const stopBtn = document.getElementById("stop-btn");
 const ttsSection = document.getElementById("tts-section");
 const ttsInput = document.getElementById("tts-input");
 const speakBtn = document.getElementById("speak-btn");
+const sttSection = document.getElementById("stt-section");
+const recordBtn = document.getElementById("record-btn");
+const transcriptionDisplay = document.getElementById("transcription-display");
 const debugLog = document.getElementById("debug-log");
 
 // --- State ---
@@ -21,6 +24,8 @@ let iceServers = window.__CONFIG__ || [];
 let ws = null;
 let pc = null;
 let audioEl = null;
+let micStream = null;
+let isRecording = false;
 
 // --- Debug logging ---
 function log(msg, cls = "info") {
@@ -78,6 +83,7 @@ function connect() {
         connectBtn.disabled = false;
         controlsSection.classList.add("hidden");
         ttsSection.classList.add("hidden");
+        sttSection.classList.add("hidden");
         cleanupWebRTC();
     };
 }
@@ -95,12 +101,18 @@ function handleMessage(msg) {
             populateVoices(msg.voices);
             controlsSection.classList.remove("hidden");
             ttsSection.classList.remove("hidden");
+            sttSection.classList.remove("hidden");
             startWebRTC();
             break;
 
         case "webrtc_answer":
             log("Received WebRTC answer");
             handleWebRTCAnswer(msg.sdp);
+            break;
+
+        case "transcription":
+            log("Transcription: " + msg.text, "success");
+            transcriptionDisplay.textContent = msg.text;
             break;
 
         case "pong":
@@ -135,11 +147,27 @@ async function startWebRTC() {
     log("Starting WebRTC negotiation...");
     setRtcState("connecting");
 
+    // Request mic access — needed before offer so track is in SDP
+    try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        log("Mic access granted", "success");
+    } catch (e) {
+        log("Mic access denied — STT disabled: " + e.message, "error");
+        micStream = null;
+    }
+
     const config = { iceServers: iceServers.length > 0 ? iceServers : undefined };
     pc = new RTCPeerConnection(config);
 
-    // Receive-only audio
-    pc.addTransceiver("audio", { direction: "recvonly" });
+    if (micStream) {
+        // Add mic track — starts muted, unmuted when recording
+        // Add mic track — always enabled, server controls when to buffer
+        const micTrack = micStream.getAudioTracks()[0];
+        pc.addTrack(micTrack, micStream);
+    } else {
+        // No mic — receive-only
+        pc.addTransceiver("audio", { direction: "recvonly" });
+    }
 
     pc.onicecandidate = (ev) => {
         if (ev.candidate) {
@@ -153,6 +181,7 @@ async function startWebRTC() {
         if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
             setRtcState("connected");
             startBtn.disabled = false;
+            if (micStream) recordBtn.disabled = false;
         } else if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
             setRtcState("error");
         }
@@ -211,6 +240,14 @@ function setRtcState(state) {
 function cleanupWebRTC() {
     if (pc) { pc.close(); pc = null; }
     if (audioEl) { audioEl.srcObject = null; audioEl.remove(); audioEl = null; }
+    if (micStream) {
+        micStream.getTracks().forEach((t) => t.stop());
+        micStream = null;
+    }
+    isRecording = false;
+    recordBtn.classList.remove("recording");
+    recordBtn.textContent = "Record";
+    recordBtn.disabled = true;
     setRtcState("");
     startBtn.disabled = true;
     stopBtn.disabled = true;
@@ -251,6 +288,28 @@ function speakText() {
     }
 }
 
+// --- Record (STT) ---
+function toggleRecord() {
+    if (!micStream) { log("No mic access", "error"); return; }
+
+    if (!isRecording) {
+        // Start recording
+        isRecording = true;
+        recordBtn.classList.add("recording");
+        recordBtn.textContent = "Stop Recording";
+        transcriptionDisplay.textContent = "";
+        sendMsg("mic_start");
+        log("Recording started...");
+    } else {
+        // Stop recording
+        isRecording = false;
+        recordBtn.classList.remove("recording");
+        recordBtn.textContent = "Record";
+        sendMsg("mic_stop");
+        log("Recording stopped, transcribing...");
+    }
+}
+
 // --- Keepalive ---
 setInterval(() => { sendMsg("ping"); }, 25000);
 
@@ -259,6 +318,7 @@ connectBtn.addEventListener("click", connect);
 startBtn.addEventListener("click", startAudio);
 stopBtn.addEventListener("click", stopAudio);
 speakBtn.addEventListener("click", speakText);
+recordBtn.addEventListener("click", toggleRecord);
 
 // Allow Enter key to connect
 tokenInput.addEventListener("keydown", (e) => {

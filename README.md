@@ -1,10 +1,10 @@
 # WebRTC + TURN Speaker Streaming
 
-Stream generated audio from a Mac host to an iPhone browser client via WebRTC, with TURN relay support for NAT traversal.
+Stream generated audio from a Mac host to an iPhone browser client via WebRTC, with TURN relay support for NAT traversal. Bidirectional: speak into iPhone mic → server transcribes with Whisper STT.
 
-| Connected + TTS |
+| TTS + STT UI |
 |:---:|
-| ![Connected](docs/screenshots/webrtc-tts-connected.png) |
+| ![Connected](docs/screenshots/webrtc-stt-ui.png) |
 
 ## Architecture
 
@@ -21,10 +21,16 @@ Stream generated audio from a Mac host to an iPhone browser client via WebRTC, w
 │  └────────────┘    │  │    ├─ hello / hello_ack    │ │
 │       │            │  │    ├─ webrtc_offer/answer   │ │
 │       ▼            │  │    ├─ start / stop          │ │
-│  ┌────────────┐    │  │    └─ speak {text}          │ │
-│  │ PCMRing    │    │  │                             │ │
-│  │ Buffer     │───▶│  └─ RTCPeerConnection          │ │
-│  └────────────┘    │     └─ AudioTrack (Opus 48kHz) │ │
+│  ┌────────────┐    │  │    ├─ speak {text}          │ │
+│  │ PCMRing    │    │  │    ├─ mic_start/mic_stop    │ │
+│  │ Buffer     │───▶│  │    └─ transcription {text}  │ │
+│  └────────────┘    │  └─ RTCPeerConnection          │ │
+│                    │     ├─ AudioTrack out (TTS)     │ │
+│  ┌────────────┐    │     └─ AudioTrack in  (mic)     │ │
+│  │ Whisper    │◀───│        └─ buffer → STT          │ │
+│  │ STT (base) │    │                                 │ │
+│  │ 48k→16kHz  │    │                                 │ │
+│  └────────────┘    │                                 │ │
 │                    └───────────────────────────────┘ │
 └──────────────────────┬───────────────────────────────┘
                        │  WebRTC (UDP)
@@ -36,7 +42,8 @@ Stream generated audio from a Mac host to an iPhone browser client via WebRTC, w
 │  ┌───────────────────────────────────────────────┐   │
 │  │  web/app.js                                   │   │
 │  │  ├─ WebSocket signaling                       │   │
-│  │  ├─ RTCPeerConnection (recvonly)              │   │
+│  │  ├─ RTCPeerConnection (sendrecv)              │   │
+│  │  ├─ getUserMedia (mic) → send audio track     │   │
 │  │  └─ <audio> element playback                  │   │
 │  └───────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────┘
@@ -77,6 +84,10 @@ Client                          Server
   │                               │
   │─── speak {text} ─────────────▶│   TTS → ring buffer → WebRTC
   │                               │
+  │─── mic_start ───────────────▶│   Start buffering mic audio
+  │─── mic_stop ────────────────▶│   Stop buffering → run Whisper STT
+  │◀── transcription {text} ─────│   Transcribed text
+  │                               │
   │─── ping ─────────────────────▶│   Keepalive
   │◀── pong ──────────────────────│
 ```
@@ -89,12 +100,14 @@ Client                          Server
 ├── engine/                  # Audio generation layer
 │   ├── types.py             # VoiceInfo, AudioChunk dataclasses
 │   ├── adapter.py           # list_voices(), SineWaveGenerator
-│   └── tts.py               # Piper TTS (text → 48kHz PCM)
+│   ├── tts.py               # Piper TTS (text → 48kHz PCM)
+│   └── stt.py               # Whisper STT (48kHz PCM → text)
 │
 ├── gateway/                 # Server + WebRTC layer
-│   ├── server.py            # aiohttp HTTP + WS server
-│   ├── webrtc.py            # Session, RTCPeerConnection, BufferedGenerator
+│   ├── server.py            # aiohttp HTTP/HTTPS + WS server
+│   ├── webrtc.py            # Session, RTCPeerConnection, mic recording
 │   ├── turn.py              # Twilio TURN credential fetching
+│   ├── cert.py              # Self-signed HTTPS cert for LAN testing
 │   └── audio/
 │       ├── pcm_ring_buffer.py        # Thread-safe ring buffer
 │       └── webrtc_audio_source.py    # Custom MediaStreamTrack
@@ -105,7 +118,7 @@ Client                          Server
 │   └── styles.css           # Mobile CSS with large touch targets
 │
 ├── scripts/                 # Testing & tooling
-│   ├── smoke_test.py        # Headless TTS pipeline test (26 tests)
+│   ├── smoke_test.py        # Headless TTS + STT pipeline test (30 tests)
 │   ├── test_local.sh        # Local browser test
 │   ├── test_lan.sh          # iPhone on same Wi-Fi
 │   ├── test_cellular.sh     # iPhone on cellular (cloudflared tunnel)
@@ -134,6 +147,7 @@ Client                          Server
 | 3 | Sine Wave Streaming | Done | Click Start → hear tone, Stop → silence, switch voice → different frequency |
 | 3b | TURN Relay Support | Done | Twilio TURN credentials, relay ICE candidates, works over cellular |
 | 4a | TTS → WebRTC Pipeline | Done | Type text, click Speak → hear Piper TTS voice through WebRTC |
+| 5 | iPhone Mic → STT → Text | Done | Tap Record → speak → see transcribed text (Whisper STT via WebRTC) |
 
 ## Testing
 
@@ -143,7 +157,7 @@ Client                          Server
 python3 scripts/smoke_test.py
 ```
 
-Tests the full pipeline without a browser — 26 tests across 4 areas:
+Tests the full pipeline without a browser — 30 tests across 6 areas:
 
 | Suite | What it tests |
 |-------|--------------|
@@ -151,6 +165,8 @@ Tests the full pipeline without a browser — 26 tests across 4 areas:
 | PCMRingBuffer | Write/read, zero-padding, overflow, clear |
 | BufferedGenerator | 20ms chunk framing, data integrity, silence on empty |
 | WAV output | Saves `logs/smoke_test.wav`, validates format |
+| STT transcribe | TTS → Whisper round-trip, produces non-empty text |
+| STT empty input | Empty audio returns empty string |
 
 ### Local Test (Mac browser)
 
@@ -166,7 +182,7 @@ Starts the server, opens `http://localhost:8080`, tails logs.
 bash scripts/test_lan.sh
 ```
 
-Detects your Mac's LAN IP, prints a QR code to scan on iPhone.
+Starts HTTPS server (self-signed cert for mic access), detects LAN IP, prints QR code.
 
 ### Cellular Test (iPhone on AT&T / cellular)
 
@@ -180,9 +196,9 @@ Starts a Cloudflare Tunnel (HTTPS), prints QR code. Requires `brew install cloud
 
 | Test | Result |
 |------|--------|
-| `smoke_test.py` | 26/26 PASS |
-| `test_local.sh` | Audio heard in Mac browser |
-| `test_lan.sh` | Audio heard on iPhone (Wi-Fi) |
+| `smoke_test.py` | 30/30 PASS |
+| `test_local.sh` | TTS audio heard in Mac browser |
+| `test_lan.sh` | TTS + STT working on iPhone (Wi-Fi, HTTPS) |
 | `test_cellular.sh` | Audio heard on iPhone (cellular) |
 
 ## Quick Start
@@ -211,6 +227,8 @@ open http://localhost:8080
 | `TWILIO_ACCOUNT_SID` | — | Twilio Account SID (for TURN credentials) |
 | `TWILIO_AUTH_TOKEN` | — | Twilio Auth Token (for TURN credentials) |
 | `ICE_SERVERS_JSON` | `[]` | Manual ICE server fallback (used if Twilio not configured) |
+| `HTTPS` | — | Set to `1` to enable self-signed HTTPS (needed for mic on LAN) |
+| `LOCAL_IP` | `192.168.1.1` | LAN IP for self-signed cert SAN (set by test_lan.sh) |
 
 ### Twilio TURN Setup
 
@@ -234,12 +252,17 @@ open http://localhost:8080
 | Resampling | scipy.signal.resample | Piper outputs 22050Hz, WebRTC needs 48000Hz |
 | ICE strategy | Client waits for gathering complete | aiortc has no trickle ICE |
 | TURN credentials | Twilio NTS, fetched per-connection | Ephemeral creds, no static secrets in client |
+| STT engine | faster-whisper (base, int8) | 4x faster than openai/whisper, CPU mode, ~75MB |
+| STT resampling | 48kHz → 16kHz | Whisper expects 16kHz; uses scipy.signal.resample |
+| Mic direction | sendrecv | Single WebRTC connection for TTS playback + mic capture |
+| LAN HTTPS | Self-signed cert (auto-generated) | getUserMedia requires secure context on non-localhost |
 | Auth | Token in WS `hello` message | Simple, avoids HTTP header complexity |
 | Remote access | Cloudflare Tunnel | Free, no domain needed, handles HTTPS + WSS |
 
 ## iOS Safari Notes
 
 - Audio autoplay is blocked until a user gesture — the Start button click triggers `audio.play()`
+- `getUserMedia` requires HTTPS (or localhost) — LAN test uses self-signed cert
 - Uses `<audio>` element (not AudioContext) for maximum mobile compatibility
 - CSS uses large touch targets (min 44px) for iPhone usability
 - `playsinline` attribute is required for inline audio on iOS

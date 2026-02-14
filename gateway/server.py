@@ -113,6 +113,22 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             else:
                 await ws.send_json({"type": "error", "message": "No WebRTC session"})
 
+        elif msg_type == "mic_start":
+            if session:
+                session.start_recording()
+                log.info("Mic recording started")
+            else:
+                await ws.send_json({"type": "error", "message": "No WebRTC session"})
+
+        elif msg_type == "mic_stop":
+            if session:
+                log.info("Mic recording stopping, running STT...")
+                text = await session.stop_recording()
+                await ws.send_json({"type": "transcription", "text": text})
+                log.info("Transcription sent: %r", text[:80] if text else "")
+            else:
+                await ws.send_json({"type": "error", "message": "No WebRTC session"})
+
         elif msg_type == "ping":
             await ws.send_json({"type": "pong"})
 
@@ -163,5 +179,20 @@ if __name__ == "__main__":
     logging.getLogger("aioice").setLevel(logging.WARNING)
     log.info("Logging to %s", log_file)
     app = create_app()
-    log.info("Serving on http://0.0.0.0:%d", PORT)
-    web.run_app(app, host="0.0.0.0", port=PORT)
+
+    # HTTPS mode for LAN testing (getUserMedia requires secure context)
+    ssl_ctx = None
+    if os.getenv("HTTPS"):
+        import ssl
+        from gateway.cert import ensure_cert
+
+        local_ip = os.getenv("LOCAL_IP", "192.168.1.1")
+        cert_path, key_path = ensure_cert(local_ip)
+        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ssl_ctx.load_cert_chain(str(cert_path), str(key_path))
+        log.info("HTTPS enabled with self-signed cert for %s", local_ip)
+        log.info("Serving on https://0.0.0.0:%d", PORT)
+    else:
+        log.info("Serving on http://0.0.0.0:%d", PORT)
+
+    web.run_app(app, host="0.0.0.0", port=PORT, ssl_context=ssl_ctx)

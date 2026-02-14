@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Headless smoke test for the TTS → WebRTC audio pipeline.
+"""Headless smoke test for the TTS + STT audio pipeline.
 
 Tests each layer without needing a browser or WebRTC connection:
   1. engine/tts.synthesize()  → validates PCM output
   2. PCMRingBuffer            → write/read correctness
   3. BufferedGenerator        → 20ms chunk framing
   4. WAV output               → saves to logs/smoke_test.wav
+  5. engine/stt.transcribe()  → STT round-trip (TTS → STT)
 
 Usage:
     python3 scripts/smoke_test.py
@@ -176,10 +177,37 @@ def test_wav_output(pcm: bytes):
         report("WAV output", False, str(e))
 
 
+def test_stt_transcribe(pcm: bytes):
+    """Test 5: STT round-trip — synthesize text then transcribe it back."""
+    print("\n--- Test 5: STT transcribe (round-trip) ---")
+    try:
+        from engine.stt import transcribe
+
+        text = transcribe(pcm, sample_rate=SAMPLE_RATE)
+        report("transcribe returns string", isinstance(text, str))
+        report("transcription is non-empty", len(text) > 0, repr(text[:80]))
+
+    except Exception as e:
+        report("STT transcribe executes without error", False, str(e))
+
+
+def test_stt_empty():
+    """Test 5b: STT with empty input returns empty string."""
+    print("\n--- Test 5b: STT empty input ---")
+    try:
+        from engine.stt import transcribe
+
+        result = transcribe(b"", sample_rate=SAMPLE_RATE)
+        report("empty input returns empty string", result == "", repr(result))
+
+    except Exception as e:
+        report("STT empty input", False, str(e))
+
+
 def main():
     global passed, failed
     print("=" * 50)
-    print("  Smoke Test: TTS → WebRTC Audio Pipeline")
+    print("  Smoke Test: TTS + STT Audio Pipeline")
     print("=" * 50)
 
     # Test 1: TTS
@@ -197,6 +225,16 @@ def main():
     else:
         print("\n--- Test 4: WAV output ---")
         report("WAV output (skipped — no TTS output)", False, "TTS failed")
+
+    # Test 5: STT round-trip (needs TTS output)
+    if pcm:
+        test_stt_transcribe(pcm)
+    else:
+        print("\n--- Test 5: STT transcribe ---")
+        report("STT round-trip (skipped — no TTS output)", False, "TTS failed")
+
+    # Test 5b: STT empty input (independent)
+    test_stt_empty()
 
     # Summary
     total = passed + failed

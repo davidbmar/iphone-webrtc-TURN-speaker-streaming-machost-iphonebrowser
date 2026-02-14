@@ -18,5 +18,8 @@ models/
 # Server logs
 logs/
 
+# Self-signed certs for LAN testing
+certs/
+
 # Environment
 .env

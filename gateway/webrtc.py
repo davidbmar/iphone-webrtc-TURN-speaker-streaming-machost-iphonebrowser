@@ -5,6 +5,7 @@ import json
 import logging
 import os
 
+import numpy as np
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 
 from engine.adapter import create_generator
@@ -63,6 +64,12 @@ class Session:
         self._ring_buffer = PCMRingBuffer(capacity=48000 * 2 * 5)
         self._tts_generator = BufferedGenerator(self._ring_buffer)
 
+        # Mic recording state
+        self._recording = False
+        self._mic_frames: list[bytes] = []
+        self._mic_track = None
+        self._mic_recv_task: asyncio.Task | None = None
+
         # Log state changes
         @self._pc.on("connectionstatechange")
         async def on_conn_state():
@@ -75,6 +82,14 @@ class Session:
         @self._pc.on("icegatheringstatechange")
         async def on_ice_gather():
             log.info("ICE gathering state: %s", self._pc.iceGatheringState)
+
+        @self._pc.on("track")
+        async def on_track(track):
+            if track.kind != "audio":
+                return
+            log.info("Received remote audio track from browser mic")
+            self._mic_track = track
+            self._mic_recv_task = asyncio.ensure_future(self._recv_mic_audio(track))
 
     async def handle_offer(self, sdp: str) -> str:
         """Process client SDP offer, return SDP answer.
@@ -127,8 +142,88 @@ class Session:
             self._ring_buffer.write(pcm_48k)
             log.info("Wrote %d bytes of TTS audio to ring buffer", len(pcm_48k))
 
+    async def _recv_mic_audio(self, track):
+        """Background task: continuously receive audio frames from the browser mic track."""
+        logged_format = False
+        while True:
+            try:
+                frame = await track.recv()
+            except Exception:
+                log.info("Mic track ended")
+                break
+
+            if not logged_format:
+                arr = frame.to_ndarray()
+                log.info(
+                    "Mic frame format=%s rate=%d samples=%d shape=%s dtype=%s range=[%s, %s]",
+                    frame.format.name, frame.sample_rate, frame.samples,
+                    arr.shape, arr.dtype, arr.min(), arr.max(),
+                )
+                logged_format = True
+
+            if self._recording:
+                arr = frame.to_ndarray()
+                # Handle float formats (fltp/flt) — scale to int16
+                if arr.dtype in (np.float32, np.float64):
+                    arr = (arr * 32767).clip(-32768, 32767).astype(np.int16)
+                # s16 interleaved stereo: shape=(1, samples*channels) — take every other sample for mono
+                flat = arr.flatten()
+                channels = flat.shape[0] // frame.samples
+                if channels > 1:
+                    flat = flat[::channels]  # take left channel
+                pcm = flat.astype(np.int16).tobytes()
+                self._mic_frames.append(pcm)
+
+    def start_recording(self):
+        """Start buffering incoming mic audio frames."""
+        self._mic_frames.clear()
+        self._recording = True
+        log.info("Mic recording started")
+
+    async def stop_recording(self) -> str:
+        """Stop recording, concatenate frames, run STT, return text."""
+        self._recording = False
+
+        if not self._mic_frames:
+            log.warning("No mic frames captured")
+            return ""
+
+        # Concatenate all buffered PCM frames
+        pcm_data = b"".join(self._mic_frames)
+        num_frames = len(self._mic_frames)
+        self._mic_frames.clear()
+
+        # Debug: check audio levels and save WAV
+        samples = np.frombuffer(pcm_data, dtype=np.int16)
+        log.info(
+            "Mic recording stopped: %d frames, %d bytes, range=[%d, %d], rms=%.1f",
+            num_frames, len(pcm_data), samples.min(), samples.max(),
+            np.sqrt(np.mean(samples.astype(np.float64) ** 2)),
+        )
+
+        # Save debug WAV
+        import wave
+        from pathlib import Path
+        wav_path = Path(__file__).resolve().parent.parent / "logs" / "mic_debug.wav"
+        wav_path.parent.mkdir(exist_ok=True)
+        with wave.open(str(wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(pcm_data)
+        log.info("Saved mic debug WAV: %s", wav_path)
+
+        # Run STT in thread pool (CPU-bound Whisper inference)
+        from engine.stt import transcribe
+        loop = asyncio.get_event_loop()
+        text = await loop.run_in_executor(None, transcribe, pcm_data, SAMPLE_RATE)
+        return text
+
     async def close(self):
         """Tear down the peer connection."""
         self.stop_audio()
+        self._recording = False
+        if self._mic_recv_task:
+            self._mic_recv_task.cancel()
         await self._pc.close()
         log.info("Session closed")

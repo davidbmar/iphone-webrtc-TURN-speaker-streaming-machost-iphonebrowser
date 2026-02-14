@@ -35,17 +35,17 @@ if [ -z "$LOCAL_IP" ]; then
   exit 1
 fi
 
-URL="http://$LOCAL_IP:$PORT"
+URL="https://$LOCAL_IP:$PORT"
 echo ""
 echo "  Local IP:  $LOCAL_IP"
-echo "  URL:       $URL"
+echo "  URL:       $URL  (self-signed HTTPS)"
 echo ""
 
 # ── Check if server is running ────────────────────────────────
 if ! lsof -i :"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "  Starting server on 0.0.0.0:$PORT..."
+  echo "  Starting HTTPS server on 0.0.0.0:$PORT..."
   cd "$REPO_ROOT"
-  python3 -m gateway.server > "$LOG_FILE" 2>&1 &
+  HTTPS=1 LOCAL_IP="$LOCAL_IP" python3 -m gateway.server > "$LOG_FILE" 2>&1 &
   SERVER_PID=$!
   echo "  Server PID: $SERVER_PID"
 
@@ -90,8 +90,9 @@ fi
 
 # ── Important note ────────────────────────────────────────────
 echo ""
-echo "  NOTE: iPhone Safari requires HTTPS for WebRTC on non-localhost."
-echo "  If audio fails, use test_cellular.sh (cloudflared tunnel with HTTPS)."
+echo "  NOTE: Using self-signed HTTPS for mic access (getUserMedia)."
+echo "  On first visit, Safari will show a certificate warning."
+echo "  Tap 'Show Details' → 'visit this website' → 'Visit Website' to proceed."
 echo ""
 
 # ── Tail logs ─────────────────────────────────────────────────
