@@ -2,9 +2,9 @@
 
 Stream generated audio from a Mac host to an iPhone browser client via WebRTC, with TURN relay support for NAT traversal.
 
-| Initial | Connected (TURN) | Streaming |
-|:---:|:---:|:---:|
-| ![Initial](docs/screenshots/01-initial.png) | ![Connected](docs/screenshots/02-connected-turn.png) | ![Streaming](docs/screenshots/03-streaming.png) |
+| Connected + TTS |
+|:---:|
+| ![Connected](docs/screenshots/webrtc-tts-connected.png) |
 
 ## Architecture
 
@@ -15,15 +15,16 @@ Stream generated audio from a Mac host to an iPhone browser client via WebRTC, w
 │  ┌────────────┐    ┌───────────────────────────────┐ │
 │  │   Engine    │    │          Gateway              │ │
 │  │            │    │                               │ │
-│  │ SineWave / │───▶│  aiohttp server (:8080)       │ │
-│  │ TTS gen    │    │  ├─ GET /  → index.html       │ │
-│  │            │    │  ├─ GET /ws → WebSocket        │ │
+│  │ Piper TTS  │───▶│  aiohttp server (:8080)       │ │
+│  │ 22kHz→48kHz│    │  ├─ GET /  → index.html       │ │
+│  │ resampling │    │  ├─ GET /ws → WebSocket        │ │
 │  └────────────┘    │  │    ├─ hello / hello_ack    │ │
-│                    │  │    ├─ webrtc_offer/answer   │ │
-│                    │  │    └─ start / stop          │ │
-│                    │  │                             │ │
-│                    │  └─ RTCPeerConnection          │ │
-│                    │     └─ AudioTrack (Opus 48kHz) │ │
+│       │            │  │    ├─ webrtc_offer/answer   │ │
+│       ▼            │  │    ├─ start / stop          │ │
+│  ┌────────────┐    │  │    └─ speak {text}          │ │
+│  │ PCMRing    │    │  │                             │ │
+│  │ Buffer     │───▶│  └─ RTCPeerConnection          │ │
+│  └────────────┘    │     └─ AudioTrack (Opus 48kHz) │ │
 │                    └───────────────────────────────┘ │
 └──────────────────────┬───────────────────────────────┘
                        │  WebRTC (UDP)
@@ -71,8 +72,10 @@ Client                          Server
   │─── webrtc_offer {sdp} ──────▶│   Set remote, create answer
   │◀── webrtc_answer {sdp} ──────│   ICE candidates bundled in SDP
   │                               │
-  │─── start {voice_id} ────────▶│   Begin audio generation
+  │─── start {voice_id} ────────▶│   Begin sine wave audio
   │─── stop ─────────────────────▶│   Stop audio generation
+  │                               │
+  │─── speak {text} ─────────────▶│   TTS → ring buffer → WebRTC
   │                               │
   │─── ping ─────────────────────▶│   Keepalive
   │◀── pong ──────────────────────│
@@ -85,11 +88,12 @@ Client                          Server
 ```
 ├── engine/                  # Audio generation layer
 │   ├── types.py             # VoiceInfo, AudioChunk dataclasses
-│   └── adapter.py           # list_voices(), SineWaveGenerator
+│   ├── adapter.py           # list_voices(), SineWaveGenerator
+│   └── tts.py               # Piper TTS (text → 48kHz PCM)
 │
 ├── gateway/                 # Server + WebRTC layer
 │   ├── server.py            # aiohttp HTTP + WS server
-│   ├── webrtc.py            # Session, RTCPeerConnection lifecycle
+│   ├── webrtc.py            # Session, RTCPeerConnection, BufferedGenerator
 │   ├── turn.py              # Twilio TURN credential fetching
 │   └── audio/
 │       ├── pcm_ring_buffer.py        # Thread-safe ring buffer
@@ -100,8 +104,22 @@ Client                          Server
 │   ├── app.js               # WS signaling + WebRTC + playback
 │   └── styles.css           # Mobile CSS with large touch targets
 │
-├── web-app/                 # Iris Kade (existing, untouched)
+├── scripts/                 # Testing & tooling
+│   ├── smoke_test.py        # Headless TTS pipeline test (26 tests)
+│   ├── test_local.sh        # Local browser test
+│   ├── test_lan.sh          # iPhone on same Wi-Fi
+│   ├── test_cellular.sh     # iPhone on cellular (cloudflared tunnel)
+│   ├── build-index.sh       # Project memory index builder
+│   └── setup-hooks.sh       # Git pre-commit hook installer
 │
+├── docs/
+│   ├── screenshots/         # UI screenshots
+│   └── project-memory/      # Session docs, ADRs, architecture
+│
+├── .github/
+│   └── PULL_REQUEST_TEMPLATE.md
+│
+├── CLAUDE.md                # AI project guide + memory system rules
 ├── requirements.txt         # Python dependencies
 ├── .env.example             # Environment variable template
 └── README.md                # This file
@@ -115,7 +133,57 @@ Client                          Server
 | 2 | WebRTC Negotiation | Done | Offer/answer exchange, ICE completes, "WebRTC connected" in UI |
 | 3 | Sine Wave Streaming | Done | Click Start → hear tone, Stop → silence, switch voice → different frequency |
 | 3b | TURN Relay Support | Done | Twilio TURN credentials, relay ICE candidates, works over cellular |
-| 4 | Real TTS (future) | — | Replace sine wave with actual TTS engine output |
+| 4a | TTS → WebRTC Pipeline | Done | Type text, click Speak → hear Piper TTS voice through WebRTC |
+
+## Testing
+
+### Smoke Test (headless, no browser)
+
+```bash
+python3 scripts/smoke_test.py
+```
+
+Tests the full pipeline without a browser — 26 tests across 4 areas:
+
+| Suite | What it tests |
+|-------|--------------|
+| TTS synthesize | Piper TTS → valid 48kHz PCM output |
+| PCMRingBuffer | Write/read, zero-padding, overflow, clear |
+| BufferedGenerator | 20ms chunk framing, data integrity, silence on empty |
+| WAV output | Saves `logs/smoke_test.wav`, validates format |
+
+### Local Test (Mac browser)
+
+```bash
+bash scripts/test_local.sh
+```
+
+Starts the server, opens `http://localhost:8080`, tails logs.
+
+### LAN Test (iPhone on same Wi-Fi)
+
+```bash
+bash scripts/test_lan.sh
+```
+
+Detects your Mac's LAN IP, prints a QR code to scan on iPhone.
+
+### Cellular Test (iPhone on AT&T / cellular)
+
+```bash
+bash scripts/test_cellular.sh
+```
+
+Starts a Cloudflare Tunnel (HTTPS), prints QR code. Requires `brew install cloudflared`.
+
+### Test Results (2026-02-14)
+
+| Test | Result |
+|------|--------|
+| `smoke_test.py` | 26/26 PASS |
+| `test_local.sh` | Audio heard in Mac browser |
+| `test_lan.sh` | Audio heard on iPhone (Wi-Fi) |
+| `test_cellular.sh` | Audio heard on iPhone (cellular) |
 
 ## Quick Start
 
@@ -133,34 +201,6 @@ python3 -m gateway.server
 # Open in browser
 open http://localhost:8080
 ```
-
-### Testing from iPhone (same Wi-Fi)
-
-1. Find your Mac's IP: `ipconfig getifaddr en0`
-2. Open `http://<mac-ip>:8080` in Safari on iPhone
-3. Enter the auth token and tap Connect
-4. Select a voice and tap Start
-
-### Testing from iPhone (cellular / remote)
-
-Your Mac is behind NAT, so remote clients need two things:
-- **Cloudflare Tunnel** — for the web page and WebSocket signaling
-- **Twilio TURN** — for WebRTC audio relay
-
-```bash
-# Terminal 1: run the server
-python3 -m gateway.server
-
-# Terminal 2: expose via Cloudflare Tunnel
-cloudflared tunnel --url http://localhost:8080 --protocol http2
-# Gives you: https://random-name.trycloudflare.com
-```
-
-On your iPhone (Wi-Fi off, cellular only):
-1. Open the `https://...trycloudflare.com` URL in Safari
-2. Enter the auth token, tap Connect
-3. Debug log should show **relay** ICE candidates (TURN working)
-4. Select a voice, tap Start — hear the tone over cellular
 
 ## Environment Variables
 
@@ -187,13 +227,14 @@ On your iPhone (Wi-Fi off, cellular only):
 
 | Decision | Choice | Why |
 |----------|--------|-----|
-| Server framework | aiohttp + aiortc | Most mature Python server-side WebRTC |
-| Audio sample rate | 48 kHz | Opus codec native rate, no resampling |
+| TTS engine | Piper TTS (ONNX) | Fast offline neural TTS, no API keys needed |
+| Audio sample rate | 48 kHz | Opus codec native rate |
 | Frame size | 960 samples (20 ms) | Matches aiortc `AUDIO_PTIME` |
+| TTS → WebRTC bridge | PCMRingBuffer | Thread-safe: TTS runs in thread pool, WebRTC reads in async loop |
+| Resampling | scipy.signal.resample | Piper outputs 22050Hz, WebRTC needs 48000Hz |
 | ICE strategy | Client waits for gathering complete | aiortc has no trickle ICE |
 | TURN credentials | Twilio NTS, fetched per-connection | Ephemeral creds, no static secrets in client |
 | Auth | Token in WS `hello` message | Simple, avoids HTTP header complexity |
-| Audio playback | `<audio>` element | Simplest iOS Safari compatibility |
 | Remote access | Cloudflare Tunnel | Free, no domain needed, handles HTTPS + WSS |
 
 ## iOS Safari Notes
@@ -202,7 +243,3 @@ On your iPhone (Wi-Fi off, cellular only):
 - Uses `<audio>` element (not AudioContext) for maximum mobile compatibility
 - CSS uses large touch targets (min 44px) for iPhone usability
 - `playsinline` attribute is required for inline audio on iOS
-
-## Existing: Iris Kade Web App
-
-The `web-app/` directory contains the original Iris Kade conversational AI — a fully local browser-based system using WebGPU. It is independent of the WebRTC streaming system. See `web-app/` for its own documentation.

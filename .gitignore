@@ -12,5 +12,11 @@ venv/
 .venv/
 *.egg-info/
 
+# TTS voice models (large ONNX files)
+models/
+
+# Server logs
+logs/
+
 # Environment
 .env

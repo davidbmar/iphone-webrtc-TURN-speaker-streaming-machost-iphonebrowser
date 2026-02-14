@@ -103,6 +103,16 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 session.stop_audio()
                 log.info("Audio stopped")
 
+        elif msg_type == "speak":
+            text = msg.get("text", "").strip()
+            if not text:
+                await ws.send_json({"type": "error", "message": "Empty text"})
+            elif session:
+                log.info("TTS speak: %r", text[:80])
+                await session.speak_text(text)
+            else:
+                await ws.send_json({"type": "error", "message": "No WebRTC session"})
+
         elif msg_type == "ping":
             await ws.send_json({"type": "pong"})
 
@@ -129,11 +139,29 @@ def create_app() -> web.Application:
     return app
 
 
+LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+
+
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s %(name)-12s %(levelname)-8s %(message)s",
-    )
+    LOG_DIR.mkdir(exist_ok=True)
+    log_file = LOG_DIR / "server.log"
+
+    fmt = logging.Formatter("%(asctime)s %(name)-12s %(levelname)-8s %(message)s")
+
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(fmt)
+
+    filelog = logging.FileHandler(log_file)
+    filelog.setLevel(logging.INFO)
+    filelog.setFormatter(fmt)
+
+    logging.basicConfig(level=logging.INFO, handlers=[console, filelog])
+
+    # Silence noisy aiortc internals
+    logging.getLogger("aiortc").setLevel(logging.WARNING)
+    logging.getLogger("aioice").setLevel(logging.WARNING)
+    log.info("Logging to %s", log_file)
     app = create_app()
     log.info("Serving on http://0.0.0.0:%d", PORT)
     web.run_app(app, host="0.0.0.0", port=PORT)

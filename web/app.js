@@ -11,6 +11,9 @@ const controlsSection = document.getElementById("controls-section");
 const voiceSelect = document.getElementById("voice-select");
 const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
+const ttsSection = document.getElementById("tts-section");
+const ttsInput = document.getElementById("tts-input");
+const speakBtn = document.getElementById("speak-btn");
 const debugLog = document.getElementById("debug-log");
 
 // --- State ---
@@ -74,6 +77,7 @@ function connect() {
         setWsState("error");
         connectBtn.disabled = false;
         controlsSection.classList.add("hidden");
+        ttsSection.classList.add("hidden");
         cleanupWebRTC();
     };
 }
@@ -90,6 +94,7 @@ function handleMessage(msg) {
             setWsState("connected");
             populateVoices(msg.voices);
             controlsSection.classList.remove("hidden");
+            ttsSection.classList.remove("hidden");
             startWebRTC();
             break;
 
@@ -233,6 +238,19 @@ function stopAudio() {
     stopBtn.disabled = true;
 }
 
+// --- TTS ---
+function speakText() {
+    const text = ttsInput.value.trim();
+    if (!text) { log("Enter text to speak", "error"); return; }
+    log("Speaking: " + text);
+    sendMsg("speak", { text });
+
+    // iOS Safari: ensure audio element plays (needs gesture)
+    if (audioEl) {
+        audioEl.play().catch(() => log("Audio play blocked by browser", "error"));
+    }
+}
+
 // --- Keepalive ---
 setInterval(() => { sendMsg("ping"); }, 25000);
 
@@ -240,10 +258,16 @@ setInterval(() => { sendMsg("ping"); }, 25000);
 connectBtn.addEventListener("click", connect);
 startBtn.addEventListener("click", startAudio);
 stopBtn.addEventListener("click", stopAudio);
+speakBtn.addEventListener("click", speakText);
 
 // Allow Enter key to connect
 tokenInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") connect();
+});
+
+// Allow Enter key to speak
+ttsInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") speakText();
 });
 
 log("Client ready. Enter token and connect.");
