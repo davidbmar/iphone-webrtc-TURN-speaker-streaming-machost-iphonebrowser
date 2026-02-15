@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -24,6 +25,7 @@ ICE_SERVERS_JSON = os.getenv("ICE_SERVERS_JSON", "[]")
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 INDEX_TEMPLATE = None  # Loaded on startup
+_START_TIME = None  # Set on app creation
 
 
 def build_index_html() -> str:
@@ -37,6 +39,12 @@ def build_index_html() -> str:
 async def handle_index(request: web.Request) -> web.Response:
     """Serve index.html with injected config."""
     return web.Response(text=INDEX_TEMPLATE, content_type="text/html")
+
+
+async def handle_health(request: web.Request) -> web.Response:
+    """Lightweight health check — confirms event loop is responsive."""
+    uptime = round(time.time() - _START_TIME, 1) if _START_TIME else 0
+    return web.json_response({"status": "ok", "uptime": uptime})
 
 
 # ── WebSocket handler ─────────────────────────────────────────
@@ -187,11 +195,13 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 # ── App setup ─────────────────────────────────────────────────
 
 def create_app() -> web.Application:
-    global INDEX_TEMPLATE
+    global INDEX_TEMPLATE, _START_TIME
     INDEX_TEMPLATE = build_index_html()
+    _START_TIME = time.time()
 
     app = web.Application()
     app.router.add_get("/", handle_index)
+    app.router.add_get("/health", handle_health)
     app.router.add_get("/ws", handle_ws)
     app.router.add_static("/static", WEB_DIR, show_index=False)
     return app
