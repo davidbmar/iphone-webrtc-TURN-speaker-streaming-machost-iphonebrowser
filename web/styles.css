@@ -1,3 +1,34 @@
+/* ═══════════════════════════════════════════════
+   ART DECO — FOUNDATION / ASIMOV AESTHETIC
+   Gold geometric empire meets space-age futurism
+   ═══════════════════════════════════════════════ */
+
+:root {
+    --gold: #c9a84c;
+    --gold-light: #e8d5a3;
+    --gold-pale: #f4ecd8;
+    --gold-dark: #8a6d2b;
+    --gold-glow: rgba(201, 168, 76, 0.12);
+    --gold-border: rgba(201, 168, 76, 0.25);
+    --gold-border-strong: rgba(201, 168, 76, 0.5);
+
+    --bg-void: #050508;
+    --bg-deep: #0a0b10;
+    --bg-card: #0e1018;
+    --bg-surface: #141620;
+    --bg-elevated: #1a1d2a;
+
+    --text-primary: #f0e6d3;
+    --text-muted: #7a6f5e;
+    --text-dim: #4a4538;
+
+    --red-ember: #c44a35;
+    --red-glow: rgba(196, 74, 53, 0.3);
+
+    --font-display: 'Cinzel', 'Times New Roman', serif;
+    --font-body: 'Raleway', 'Helvetica Neue', sans-serif;
+}
+
 * {
     box-sizing: border-box;
     margin: 0;
@@ -5,11 +36,13 @@
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #1a1a2e;
-    color: #e0e0e0;
+    font-family: var(--font-body);
+    font-weight: 400;
+    background: var(--bg-void);
+    color: var(--text-primary);
     min-height: 100vh;
     min-height: 100dvh;
+    -webkit-font-smoothing: antialiased;
 }
 
 .container {
@@ -19,219 +52,591 @@ body {
     height: 100dvh;
 }
 
-/* ── Screen 1: Connect ──────────────────────── */
+/* ── Screen 1: Connect ══════════════════════════ */
+
 #connect-screen {
     display: flex;
     align-items: center;
     justify-content: center;
     height: 100%;
     padding: 24px;
+    position: relative;
+    overflow: hidden;
+    background:
+        radial-gradient(ellipse at 50% 35%, rgba(201, 168, 76, 0.04) 0%, transparent 60%),
+        var(--bg-void);
 }
 
+/* Decorative radial rays behind the card */
+.deco-rays {
+    position: absolute;
+    top: 15%;
+    left: 50%;
+    width: 300px;
+    height: 300px;
+    transform: translateX(-50%);
+    background:
+        repeating-conic-gradient(
+            from 0deg,
+            rgba(201, 168, 76, 0.03) 0deg 2deg,
+            transparent 2deg 12deg
+        );
+    border-radius: 50%;
+    mask-image: radial-gradient(circle, black 20%, transparent 70%);
+    -webkit-mask-image: radial-gradient(circle, black 20%, transparent 70%);
+    pointer-events: none;
+    animation: rays-rotate 120s linear infinite;
+}
+
+@keyframes rays-rotate {
+    to { transform: translateX(-50%) rotate(360deg); }
+}
+
+/* Connect card */
 .connect-card {
     width: 100%;
-    background: #16213e;
-    border-radius: 16px;
-    padding: 32px 24px;
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* Winged emblem — raster image */
+.emblem-wrap {
+    width: 220px;
+    margin-bottom: 4px;
+    animation: emblem-appear 1.5s ease-out;
+    filter: drop-shadow(0 0 24px rgba(201, 168, 76, 0.2));
+}
+
+.winged-emblem {
+    width: 100%;
+    height: auto;
+    display: block;
+    /* Fade edges into the void background */
+    mask-image: radial-gradient(ellipse 85% 80% at 50% 45%, black 40%, transparent 72%);
+    -webkit-mask-image: radial-gradient(ellipse 85% 80% at 50% 45%, black 40%, transparent 72%);
+    /* Slight sepia-gold tint via blend */
+    mix-blend-mode: lighten;
+    opacity: 0.85;
+}
+
+@keyframes emblem-appear {
+    from {
+        opacity: 0;
+        transform: translateY(12px) scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+/* Art Deco frame around the form */
+.deco-frame {
+    width: 100%;
+    background: var(--bg-card);
+    border: 1px solid var(--gold-border);
+    padding: 28px 24px 24px;
+    position: relative;
+    /* Clipped corners — Art Deco polygon */
+    clip-path: polygon(
+        12px 0%, calc(100% - 12px) 0%,
+        100% 12px, 100% calc(100% - 12px),
+        calc(100% - 12px) 100%, 12px 100%,
+        0% calc(100% - 12px), 0% 12px
+    );
+    animation: frame-appear 1s ease-out 0.3s both;
+}
+
+@keyframes frame-appear {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Corner accents on the frame (pseudo-elements) */
+.deco-frame::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    border: 1px solid var(--gold-border);
+    clip-path: polygon(
+        12px 0%, calc(100% - 12px) 0%,
+        100% 12px, 100% calc(100% - 12px),
+        calc(100% - 12px) 100%, 12px 100%,
+        0% calc(100% - 12px), 0% 12px
+    );
+    pointer-events: none;
 }
 
 .connect-card h1 {
-    font-size: 1.5rem;
+    font-family: var(--font-display);
+    font-size: 1.4rem;
+    font-weight: 600;
     text-align: center;
-    margin-bottom: 24px;
-    color: #00d4ff;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--gold);
+    margin-bottom: 4px;
 }
 
-.connect-card label {
+/* Art Deco horizontal divider */
+.deco-divider {
+    width: 60%;
+    height: 1px;
+    margin: 12px auto 20px;
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        var(--gold-border-strong) 20%,
+        var(--gold) 50%,
+        var(--gold-border-strong) 80%,
+        transparent 100%
+    );
+    position: relative;
+}
+
+.deco-divider::before {
+    content: '◆';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 6px;
+    color: var(--gold);
+    background: var(--bg-card);
+    padding: 0 6px;
+}
+
+.connect-card label,
+.deco-frame label {
     display: block;
-    font-size: 0.85rem;
-    color: #aaa;
-    margin-bottom: 6px;
+    font-family: var(--font-display);
+    font-size: 0.7rem;
+    font-weight: 400;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 8px;
 }
 
-.connect-card input {
+.connect-card input,
+.deco-frame input {
     width: 100%;
-    padding: 14px;
-    border: 1px solid #333;
-    border-radius: 10px;
-    background: #0f3460;
-    color: #e0e0e0;
+    padding: 14px 16px;
+    border: 1px solid var(--gold-border);
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    font-family: var(--font-body);
     font-size: 1rem;
+    font-weight: 300;
+    letter-spacing: 0.05em;
     margin-bottom: 16px;
     -webkit-appearance: none;
+    /* Angular corners */
+    clip-path: polygon(
+        8px 0%, calc(100% - 8px) 0%,
+        100% 8px, 100% calc(100% - 8px),
+        calc(100% - 8px) 100%, 8px 100%,
+        0% calc(100% - 8px), 0% 8px
+    );
+    transition: border-color 0.3s;
 }
 
-.connect-card input:focus {
+.connect-card input:focus,
+.deco-frame input:focus {
     outline: none;
-    border-color: #00d4ff;
+    border-color: var(--gold);
+    box-shadow: 0 0 0 1px var(--gold-border);
 }
 
 .connect-status {
     text-align: center;
-    font-size: 0.85rem;
-    color: #aaa;
+    font-family: var(--font-body);
+    font-size: 0.8rem;
+    font-weight: 300;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
     margin-top: 12px;
     min-height: 1.2em;
 }
 
 .connect-status.error {
-    color: #e74c3c;
+    color: var(--red-ember);
 }
 
-/* ── Buttons ────────────────────────────────── */
+/* ── Buttons ════════════════════════════════════ */
+
 button {
     width: 100%;
     padding: 14px;
     border: none;
-    border-radius: 10px;
-    font-size: 1rem;
-    font-weight: 600;
+    font-family: var(--font-display);
+    font-size: 0.85rem;
+    font-weight: 500;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
     cursor: pointer;
     min-height: 48px;
-    transition: opacity 0.2s;
+    transition: all 0.3s ease;
 }
 
-button:active { opacity: 0.7; }
-button:disabled { opacity: 0.4; cursor: not-allowed; }
+button:active { opacity: 0.8; }
+button:disabled { opacity: 0.3; cursor: not-allowed; }
 
 .btn-primary {
-    background: #00d4ff;
-    color: #1a1a2e;
+    background: linear-gradient(135deg, var(--gold-dark) 0%, var(--gold) 50%, var(--gold-light) 100%);
+    color: var(--bg-void);
+    border: 1px solid var(--gold);
+    clip-path: polygon(
+        10px 0%, calc(100% - 10px) 0%,
+        100% 10px, 100% calc(100% - 10px),
+        calc(100% - 10px) 100%, 10px 100%,
+        0% calc(100% - 10px), 0% 10px
+    );
+    font-weight: 600;
+    position: relative;
+    overflow: hidden;
 }
 
-/* ── Screen 2: Agent ────────────────────────── */
+.btn-primary::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+    animation: shimmer 4s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+    0%, 100% { left: -100%; }
+    50% { left: 100%; }
+}
+
+/* ── Screen 2: Agent ════════════════════════════ */
+
 #agent-screen {
     display: flex;
     flex-direction: column;
     height: 100%;
+    background:
+        linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-void) 100%);
 }
 
-/* Top bar — provider selector */
+/* Top bar — model selector */
 #top-bar {
     padding: 10px 16px;
     padding-top: max(10px, env(safe-area-inset-top));
-    background: #16213e;
-    border-bottom: 1px solid #2a2a4a;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--gold-border);
 }
 
-#provider-select {
+.top-bar-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* Thin gold decorative line */
+.deco-line-h {
+    height: 1px;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        var(--gold-border) 30%,
+        var(--gold-border-strong) 50%,
+        var(--gold-border) 70%,
+        transparent
+    );
+}
+
+#provider-select,
+#voice-select {
     width: 100%;
-    padding: 8px 12px;
-    border: 1px solid #333;
-    border-radius: 8px;
-    background: #0f3460;
-    color: #e0e0e0;
-    font-size: 0.9rem;
+    padding: 10px 14px;
+    border: 1px solid var(--gold-border);
+    background: var(--bg-deep);
+    color: var(--gold-light);
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    font-weight: 400;
+    letter-spacing: 0.04em;
     -webkit-appearance: none;
+    clip-path: polygon(
+        6px 0%, calc(100% - 6px) 0%,
+        100% 6px, 100% calc(100% - 6px),
+        calc(100% - 6px) 100%, 6px 100%,
+        0% calc(100% - 6px), 0% 6px
+    );
 }
 
-/* Conversation log — fills available space */
+#voice-select {
+    margin-top: 6px;
+}
+
+/* Optgroup labels */
+#provider-select optgroup,
+#voice-select optgroup {
+    font-family: var(--font-body);
+    font-weight: 600;
+    color: var(--gold);
+    font-size: 0.8rem;
+    letter-spacing: 0.05em;
+}
+
+#provider-select option,
+#voice-select option {
+    font-weight: 400;
+    color: var(--text-primary);
+    background: var(--bg-deep);
+}
+
+#provider-select option.download-option {
+    color: var(--gold);
+}
+
+/* Download progress bar */
+#download-bar {
+    margin-top: 4px;
+}
+
+#download-label {
+    font-family: var(--font-body);
+    font-size: 0.7rem;
+    font-weight: 300;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    display: block;
+    margin-bottom: 4px;
+}
+
+.progress-track {
+    width: 100%;
+    height: 3px;
+    background: var(--bg-elevated);
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--gold-dark), var(--gold), var(--gold-light));
+    transition: width 0.3s ease;
+    box-shadow: 0 0 8px var(--gold-glow);
+}
+
+/* ── Conversation log ═══════════════════════════ */
+
 #conversation-log {
     flex: 1;
     overflow-y: auto;
-    padding: 16px;
+    padding: 20px 16px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
     -webkit-overflow-scrolling: touch;
 }
 
 #conversation-log:empty::before {
-    content: "Tap Push to Talk and speak...";
-    color: #555;
-    font-style: italic;
+    content: "Speak, and the Oracle shall answer\2026";
+    color: var(--text-dim);
+    font-family: var(--font-display);
+    font-size: 0.85rem;
+    font-weight: 400;
+    letter-spacing: 0.1em;
+    font-style: normal;
     text-align: center;
-    margin-top: 40vh;
+    margin-top: 35vh;
+    opacity: 0.7;
 }
 
-/* Chat bubbles */
+/* Chat bubbles — angular Art Deco shapes */
 .msg {
-    padding: 10px 14px;
-    border-radius: 18px;
-    font-size: 1rem;
-    line-height: 1.45;
+    padding: 12px 16px;
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+    font-weight: 300;
+    line-height: 1.55;
+    letter-spacing: 0.02em;
     max-width: 85%;
     word-wrap: break-word;
+    position: relative;
 }
 
 .msg-user {
-    background: #0a84ff;
-    color: white;
+    background: linear-gradient(135deg, rgba(201, 168, 76, 0.12) 0%, rgba(201, 168, 76, 0.06) 100%);
+    border: 1px solid var(--gold-border);
+    color: var(--gold-pale);
     align-self: flex-end;
-    border-bottom-right-radius: 4px;
+    /* Angular clip — notched bottom-right */
+    clip-path: polygon(
+        0% 0%, 100% 0%, 100% calc(100% - 10px),
+        calc(100% - 10px) 100%, 0% 100%
+    );
 }
 
 .msg-agent {
-    background: #2a2a4a;
-    color: #e0e0e0;
+    background: var(--bg-surface);
+    border: 1px solid rgba(201, 168, 76, 0.1);
+    border-left: 2px solid var(--gold-border-strong);
+    color: var(--text-primary);
     align-self: flex-start;
-    border-bottom-left-radius: 4px;
+    /* Angular clip — notched bottom-left */
+    clip-path: polygon(
+        0% 0%, 100% 0%, 100% 100%,
+        10px 100%, 0% calc(100% - 10px)
+    );
 }
 
 .msg.thinking {
-    color: #8899aa;
+    color: var(--text-muted);
     font-style: italic;
-    animation: pulse 1.5s infinite;
+    animation: oracle-pulse 2s ease-in-out infinite;
+    border-left-color: var(--gold-border);
 }
 
-@keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+@keyframes oracle-pulse {
+    0%, 100% { opacity: 1; border-left-color: var(--gold-border-strong); }
+    50% { opacity: 0.4; border-left-color: var(--gold-border); }
 }
 
-/* Bottom bar — fixed at bottom */
+/* ── Bottom bar ═════════════════════════════════ */
+
 #bottom-bar {
     padding: 12px 16px;
     padding-bottom: max(12px, env(safe-area-inset-bottom));
-    background: #16213e;
-    border-top: 1px solid #2a2a4a;
+    background: var(--bg-card);
+    border-top: 1px solid var(--gold-border);
     display: flex;
     flex-direction: column;
     gap: 8px;
 }
 
-/* Stop button — compact, appears during playback */
+/* Stop button */
 .btn-stop {
     background: transparent;
-    border: 2px solid #e74c3c;
-    color: #e74c3c;
-    border-radius: 10px;
-    font-size: 0.9rem;
+    border: 1px solid var(--red-ember);
+    color: var(--red-ember);
+    font-size: 0.75rem;
     padding: 10px;
+    clip-path: polygon(
+        8px 0%, calc(100% - 8px) 0%,
+        100% 8px, 100% calc(100% - 8px),
+        calc(100% - 8px) 100%, 8px 100%,
+        0% calc(100% - 8px), 0% 8px
+    );
 }
 
-/* Hold to Talk — big walkie-talkie button */
+/* Hold to Speak — Art Deco medallion */
 .btn-talk {
-    background: #2ecc71;
-    color: #1a1a2e;
-    border-radius: 14px;
-    font-size: 1.2rem;
-    padding: 22px;
+    background: var(--bg-deep);
+    border: 2px solid var(--gold);
+    color: var(--gold);
+    font-size: 1.05rem;
+    padding: 20px;
     user-select: none;
     -webkit-user-select: none;
     touch-action: none;
+    position: relative;
+    overflow: hidden;
+    /* Octagonal Art Deco shape */
+    clip-path: polygon(
+        16px 0%, calc(100% - 16px) 0%,
+        100% 16px, 100% calc(100% - 16px),
+        calc(100% - 16px) 100%, 16px 100%,
+        0% calc(100% - 16px), 0% 16px
+    );
+}
+
+.btn-talk::before {
+    content: '';
+    position: absolute;
+    inset: 3px;
+    border: 1px solid var(--gold-border);
+    clip-path: polygon(
+        14px 0%, calc(100% - 14px) 0%,
+        100% 14px, 100% calc(100% - 14px),
+        calc(100% - 14px) 100%, 14px 100%,
+        0% calc(100% - 14px), 0% 14px
+    );
+    pointer-events: none;
+}
+
+.talk-icon {
+    display: inline-block;
+    margin-right: 6px;
+    font-size: 0.7em;
+    vertical-align: middle;
+    opacity: 0.6;
 }
 
 .btn-talk.recording {
-    background: #e74c3c;
-    color: white;
-    animation: pulse-record 1s infinite;
+    background: linear-gradient(135deg, rgba(196, 74, 53, 0.2) 0%, rgba(196, 74, 53, 0.1) 100%);
+    border-color: var(--red-ember);
+    color: var(--red-ember);
+    animation: pulse-record 1.2s ease-in-out infinite;
 }
 
-.btn-talk .hint {
-    display: block;
-    font-size: 0.75rem;
-    font-weight: 400;
-    opacity: 0.7;
-    margin-top: 4px;
+.btn-talk.recording::before {
+    border-color: rgba(196, 74, 53, 0.3);
 }
 
 @keyframes pulse-record {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.4); }
-    50% { box-shadow: 0 0 0 14px rgba(231, 76, 60, 0); }
+    0%, 100% { box-shadow: 0 0 0 0 var(--red-glow); }
+    50% { box-shadow: 0 0 0 12px rgba(196, 74, 53, 0); }
 }
 
-/* Hidden state */
+/* ── Hidden state ═══════════════════════════════ */
+
 .hidden {
     display: none !important;
+}
+
+/* ── Subtle background texture ══════════════════ */
+
+body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+        repeating-linear-gradient(
+            0deg,
+            rgba(201, 168, 76, 0.015) 0px,
+            rgba(201, 168, 76, 0.015) 1px,
+            transparent 1px,
+            transparent 40px
+        ),
+        repeating-linear-gradient(
+            90deg,
+            rgba(201, 168, 76, 0.015) 0px,
+            rgba(201, 168, 76, 0.015) 1px,
+            transparent 1px,
+            transparent 40px
+        );
+    pointer-events: none;
+    z-index: 0;
+}
+
+#connect-screen, #agent-screen {
+    position: relative;
+    z-index: 1;
+}
+
+/* ── Scrollbar styling (webkit) ═════════════════ */
+
+#conversation-log::-webkit-scrollbar {
+    width: 3px;
+}
+
+#conversation-log::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+#conversation-log::-webkit-scrollbar-thumb {
+    background: var(--gold-border);
+    border-radius: 2px;
 }

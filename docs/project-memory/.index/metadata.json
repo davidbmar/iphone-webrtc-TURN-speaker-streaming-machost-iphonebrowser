@@ -12,4 +12,11 @@
     "date": "2026-02-15",
     "file": "S-2026-02-15-0059-voice-agent-simple-loop.md"
   }
+,
+  {
+    "sessionId": "S-2026-02-15-1749-rich-model-selection",
+    "title": "Rich Model Selection with Ollama Default + Cloud API Fallback",
+    "date": "2026-02-15",
+    "file": "S-2026-02-15-1749-rich-model-selection.md"
+  }
 ]

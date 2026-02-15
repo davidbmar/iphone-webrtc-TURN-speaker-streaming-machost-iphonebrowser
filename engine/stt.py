@@ -46,14 +46,14 @@ def transcribe(audio_bytes: bytes, sample_rate: int = 48000) -> str:
     samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
     duration = len(samples) / sample_rate
-    log.info("Transcribing %.2fs of audio (%d samples @ %dHz)", duration, len(samples), sample_rate)
+    log.debug("Transcribing %.2fs of audio (%d samples @ %dHz)", duration, len(samples), sample_rate)
 
     # Resample to 16kHz — faster-whisper expects 16kHz input
     WHISPER_RATE = 16000
     if sample_rate != WHISPER_RATE:
         num_output = int(len(samples) * WHISPER_RATE / sample_rate)
         samples = resample(samples, num_output).astype(np.float32)
-        log.info("Resampled to %d samples @ %dHz", len(samples), WHISPER_RATE)
+        log.debug("Resampled to %d samples @ %dHz", len(samples), WHISPER_RATE)
 
     segments, info = model.transcribe(samples, beam_size=5, language="en")
 

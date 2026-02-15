@@ -1,10 +1,10 @@
 """Gateway server — HTTP static serving + WebSocket signaling."""
 
+import asyncio
 import json
 import logging
 import os
 import time
-from dataclasses import asdict
 from pathlib import Path
 
 from aiohttp import web
@@ -12,9 +12,16 @@ from dotenv import load_dotenv
 
 load_dotenv()  # Must be before engine imports so they see .env vars
 
-from engine.adapter import list_voices
+from engine.tts import list_voices, DEFAULT_VOICE
 from engine.conversation import ConversationHistory
-from engine.llm import generate as llm_generate, is_configured as llm_is_configured, get_provider_name, available_providers
+from engine.llm import (
+    generate as llm_generate,
+    is_configured as llm_is_configured,
+    get_provider_name,
+    available_providers,
+    get_available_models,
+    pull_ollama_model,
+)
 from gateway.turn import fetch_twilio_turn_credentials
 
 log = logging.getLogger("gateway")
@@ -59,6 +66,8 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     conversation = ConversationHistory()
     agent_mode = llm_is_configured()
     llm_provider = ""  # Empty = use default from env
+    llm_model = ""  # Empty = use OLLAMA_MODEL env var
+    tts_voice = DEFAULT_VOICE
 
     async for raw in ws:
         if raw.type != web.WSMsgType.TEXT:
@@ -85,13 +94,30 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                     ice_servers = json.loads(ICE_SERVERS_JSON)
                 except json.JSONDecodeError:
                     ice_servers = []
-            voices = [asdict(v) for v in list_voices()]
+            tts_voices = list_voices()
+            model_catalog = await get_available_models()
+            # Default to Ollama if it has installed models, else fall back to cloud
+            default_model = ""
+            if model_catalog["ollama_installed"]:
+                default_provider = "ollama"
+                default_model = model_catalog["ollama_installed"][0]["name"]
+                # Set session state so the agent loop actually uses Ollama
+                llm_provider = "ollama"
+                llm_model = default_model
+                log.info("Default model: ollama/%s", default_model)
+            else:
+                default_provider = get_provider_name()
             await ws.send_json({
                 "type": "hello_ack",
-                "voices": voices,
+                "voices": tts_voices,
+                "tts_voices": tts_voices,
+                "tts_default_voice": tts_voice,
                 "ice_servers": ice_servers,
                 "llm_providers": available_providers(),
-                "llm_default": get_provider_name(),
+                "llm_default": default_provider,
+                "model_catalog": model_catalog,
+                "llm_default_provider": default_provider,
+                "llm_default_model": default_model,
             })
 
         elif msg_type == "webrtc_offer":
@@ -123,8 +149,8 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             if not text:
                 await ws.send_json({"type": "error", "message": "Empty text"})
             elif session:
-                log.info("TTS speak: %r", text[:80])
-                await session.speak_text(text)
+                log.info("TTS speak: %r (voice=%s)", text[:80], tts_voice)
+                await session.speak_text(text, voice_id=tts_voice)
             else:
                 await ws.send_json({"type": "error", "message": "No WebRTC session"})
 
@@ -137,6 +163,71 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             else:
                 await ws.send_json({"type": "error", "message": f"Unknown provider: {provider}"})
 
+        elif msg_type == "set_model":
+            provider = msg.get("provider", "")
+            model = msg.get("model", "")
+            if provider in ("claude", "openai", "ollama"):
+                llm_provider = provider
+                llm_model = model if provider == "ollama" else ""
+                conversation.clear()
+                log.info("Model switched: provider=%s, model=%s (conversation cleared)", provider, model)
+                await ws.send_json({"type": "model_set", "provider": provider, "model": model})
+            else:
+                await ws.send_json({"type": "error", "message": f"Unknown provider: {provider}"})
+
+        elif msg_type == "set_voice":
+            voice_id = msg.get("voice_id", "")
+            known_ids = {v["id"] for v in list_voices()}
+            if voice_id in known_ids:
+                tts_voice = voice_id
+                log.info("Voice switched to: %s", voice_id)
+                await ws.send_json({
+                    "type": "voice_set",
+                    "voice_id": voice_id,
+                    "tts_voices": list_voices(),
+                })
+            else:
+                await ws.send_json({"type": "error", "message": f"Unknown voice: {voice_id}"})
+
+        elif msg_type == "pull_model":
+            model_name = msg.get("model", "")
+            if not model_name:
+                await ws.send_json({"type": "error", "message": "Missing model name"})
+                continue
+            log.info("Starting model pull: %s", model_name)
+            await ws.send_json({"type": "pull_started", "model": model_name})
+
+            # Run pull as background task so the WS message loop stays responsive
+            async def _do_pull(ws, model_name):
+                try:
+                    async for progress in pull_ollama_model(model_name):
+                        if ws.closed:
+                            log.warning("WS closed during pull of %s", model_name)
+                            return
+                        status = progress.get("status", "")
+                        total = progress.get("total", 0)
+                        completed = progress.get("completed", 0)
+                        pct = int(completed / total * 100) if total > 0 else 0
+                        await ws.send_json({
+                            "type": "pull_progress",
+                            "model": model_name,
+                            "status": status,
+                            "percent": pct,
+                            "total": total,
+                            "completed": completed,
+                        })
+                    if not ws.closed:
+                        updated_catalog = await get_available_models()
+                        await ws.send_json({"type": "pull_complete", "model": model_name})
+                        await ws.send_json({"type": "model_catalog_update", "model_catalog": updated_catalog})
+                    log.info("Model pull complete: %s", model_name)
+                except Exception as e:
+                    log.error("Model pull failed: %s — %s", model_name, e)
+                    if not ws.closed:
+                        await ws.send_json({"type": "pull_error", "model": model_name, "message": str(e)})
+
+            asyncio.create_task(_do_pull(ws, model_name))
+
         elif msg_type == "stop_speaking":
             if session:
                 session.stop_speaking()
@@ -146,7 +237,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             if session:
                 async def on_transcription(text, partial):
                     await ws.send_json({"type": "transcription", "text": text, "partial": partial})
-                    log.info("Partial transcription: %r", text[:80] if text else "")
+                    log.debug("Partial transcription: %r", text[:80] if text else "")
                 session.start_recording(on_transcription=on_transcription)
                 log.info("Mic recording started (live)")
             else:
@@ -167,12 +258,12 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                     log.info("Agent thinking (provider=%s)...", active_provider)
                     try:
                         reply = await llm_generate(
-                            conversation.system, conversation.get_messages(), llm_provider
+                            conversation.system, conversation.get_messages(), llm_provider, llm_model
                         )
                         conversation.add_turn("assistant", reply)
                         await ws.send_json({"type": "agent_reply", "text": reply})
-                        log.info("Agent reply: %r", reply[:80])
-                        await session.speak_text(reply)
+                        log.info("Agent reply: %r (voice=%s)", reply[:80], tts_voice)
+                        await session.speak_text(reply, voice_id=tts_voice)
                     except Exception as e:
                         log.error("LLM error: %s", e)
                         await ws.send_json({"type": "error", "message": f"LLM error: {e}"})
@@ -226,9 +317,12 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, handlers=[console, filelog])
 
-    # Silence noisy aiortc internals
+    # Silence noisy internals
     logging.getLogger("aiortc").setLevel(logging.WARNING)
     logging.getLogger("aioice").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
     log.info("Logging to %s", log_file)
     app = create_app()
 

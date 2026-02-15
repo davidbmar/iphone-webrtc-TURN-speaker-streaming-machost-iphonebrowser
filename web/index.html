@@ -4,31 +4,58 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Voice Agent</title>
-    <link rel="stylesheet" href="/static/styles.css?v=9">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=Raleway:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css?v=22">
 </head>
 <body>
 <div class="container">
 
     <!-- Screen 1: Connect -->
     <div id="connect-screen">
+        <!-- Decorative radial lines behind the card -->
+        <div class="deco-rays"></div>
+
         <div class="connect-card">
-            <h1>Voice Agent</h1>
-            <label for="token-input">Token</label>
-            <input type="password" id="token-input" placeholder="Enter token">
-            <button class="btn-primary" id="connect-btn">Connect</button>
-            <p class="connect-status" id="connect-status"></p>
+            <!-- Art Deco Winged Figure -->
+            <div class="emblem-wrap">
+                <img class="winged-emblem" src="/static/art-deco-emblem.png" alt="Art Deco Winged Figure" draggable="false">
+            </div>
+
+            <!-- Art Deco geometric frame corners (CSS-driven) -->
+            <div class="deco-frame">
+                <h1>Voice Agent</h1>
+                <div class="deco-divider"></div>
+                <label for="token-input">Authorization</label>
+                <input type="password" id="token-input" placeholder="Enter token">
+                <button class="btn-primary" id="connect-btn">Establish Link</button>
+                <p class="connect-status" id="connect-status"></p>
+            </div>
         </div>
     </div>
 
     <!-- Screen 2: Agent (hidden until connected) -->
     <div id="agent-screen" class="hidden">
         <div id="top-bar">
-            <select id="provider-select"></select>
+            <div class="top-bar-inner">
+                <div class="deco-line-h"></div>
+                <select id="provider-select"></select>
+                <select id="voice-select"></select>
+                <div id="download-bar" class="hidden">
+                    <span id="download-label"></span>
+                    <div class="progress-track"><div class="progress-fill" id="download-fill"></div></div>
+                </div>
+                <div class="deco-line-h"></div>
+            </div>
         </div>
         <div id="conversation-log"></div>
         <div id="bottom-bar">
-            <button class="btn-stop hidden" id="stop-btn">Stop</button>
-            <button class="btn-talk" id="talk-btn" disabled>Hold to Talk</button>
+            <button class="btn-stop hidden" id="stop-btn">Cease Transmission</button>
+            <button class="btn-talk" id="talk-btn" disabled>
+                <span class="talk-icon">&#9670;</span>
+                Hold to Speak
+            </button>
         </div>
     </div>
 
@@ -38,6 +65,6 @@
 <script>
     window.__CONFIG__ = __ICE_SERVERS_PLACEHOLDER__;
 </script>
-<script src="/static/app.js?v=9"></script>
+<script src="/static/app.js?v=22"></script>
 </body>
 </html>

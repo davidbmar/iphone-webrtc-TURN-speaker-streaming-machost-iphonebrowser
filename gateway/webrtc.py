@@ -140,7 +140,7 @@ class Session:
         parts = re.split(r'(?<=[.!?])\s+', text.strip())
         return [p for p in parts if p.strip()]
 
-    async def speak_text(self, text: str):
+    async def speak_text(self, text: str, voice_id: str = ""):
         """Run TTS sentence-by-sentence and enqueue audio into the FIFO.
 
         Each sentence is synthesized in a thread, then enqueued immediately.
@@ -157,11 +157,11 @@ class Session:
 
         loop = asyncio.get_event_loop()
         for i, sentence in enumerate(sentences):
-            pcm_48k = await loop.run_in_executor(None, synthesize, sentence)
+            pcm_48k = await loop.run_in_executor(None, synthesize, sentence, voice_id)
             if pcm_48k:
                 self._audio_queue.enqueue(pcm_48k)
-                log.info("TTS sentence %d/%d enqueued: %d bytes — %r",
-                         i + 1, len(sentences), len(pcm_48k), sentence[:60])
+                log.debug("TTS sentence %d/%d enqueued: %d bytes — %r",
+                          i + 1, len(sentences), len(pcm_48k), sentence[:60])
 
     async def _recv_mic_audio(self, track):
         """Background task: continuously receive audio frames from the browser mic track."""
@@ -224,7 +224,7 @@ class Session:
 
             # Snapshot all audio accumulated so far (don't clear — rolling full)
             pcm_data = b"".join(self._mic_frames)
-            log.info("Partial transcription: %d frames, %d bytes", len(self._mic_frames), len(pcm_data))
+            log.debug("Partial transcription: %d frames, %d bytes", len(self._mic_frames), len(pcm_data))
 
             text = await loop.run_in_executor(None, transcribe, pcm_data, SAMPLE_RATE)
 

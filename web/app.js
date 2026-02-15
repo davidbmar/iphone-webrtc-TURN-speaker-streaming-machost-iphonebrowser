@@ -10,6 +10,10 @@ const conversationLog = document.getElementById("conversation-log");
 const talkBtn = document.getElementById("talk-btn");
 const stopBtn = document.getElementById("stop-btn");
 const providerSelect = document.getElementById("provider-select");
+const voiceSelect = document.getElementById("voice-select");
+const downloadBar = document.getElementById("download-bar");
+const downloadLabel = document.getElementById("download-label");
+const downloadFill = document.getElementById("download-fill");
 
 // --- State ---
 let iceServers = window.__CONFIG__ || [];
@@ -19,6 +23,9 @@ let audioEl = null;
 let micStream = null;
 let isRecording = false;
 let agentSpeaking = false;
+let currentSelectValue = ""; // Track previous select value for download revert
+let pendingDownloadModel = ""; // Model currently being downloaded (for auto-select)
+let currentVoice = ""; // Currently selected TTS voice
 
 // --- Chat bubble helpers ---
 function addChatBubble(text, role) {
@@ -49,6 +56,122 @@ function setAgentSpeaking(speaking) {
     }
 }
 
+// --- Model select population ---
+function populateModelSelect(catalog, defaultProvider, defaultModel) {
+    while (providerSelect.firstChild) providerSelect.removeChild(providerSelect.firstChild);
+
+    // Section 1: Installed Local Models
+    if (catalog.ollama_installed && catalog.ollama_installed.length > 0) {
+        const grp = document.createElement("optgroup");
+        grp.label = "Installed Local Models";
+        catalog.ollama_installed.forEach((m) => {
+            const opt = document.createElement("option");
+            opt.value = "ollama:" + m.name;
+            // Use friendly label + params if available, fall back to raw name
+            opt.textContent = m.label
+                ? m.label + " " + m.params + " (" + m.size_label + ")"
+                : m.name + " (" + m.size_label + ")";
+            grp.appendChild(opt);
+        });
+        providerSelect.appendChild(grp);
+    }
+
+    // Section 2: Download Local Model (curated not-yet-installed)
+    if (catalog.ollama_online && catalog.ollama_available && catalog.ollama_available.length > 0) {
+        const grp = document.createElement("optgroup");
+        grp.label = "Download Local Model";
+        catalog.ollama_available.forEach((m) => {
+            const opt = document.createElement("option");
+            opt.value = "download:" + m.name;
+            opt.textContent = "\u2B07 " + m.label + " (" + m.params + ")";
+            opt.className = "download-option";
+            grp.appendChild(opt);
+        });
+        providerSelect.appendChild(grp);
+    }
+
+    // Section 3: Cloud APIs
+    if (catalog.cloud_providers && catalog.cloud_providers.length > 0) {
+        const grp = document.createElement("optgroup");
+        grp.label = "Cloud APIs";
+        catalog.cloud_providers.forEach((p) => {
+            const opt = document.createElement("option");
+            opt.value = p.provider + ":" + (p.model || "");
+            opt.textContent = p.name;
+            grp.appendChild(opt);
+        });
+        providerSelect.appendChild(grp);
+    }
+
+    // Set default selection
+    let targetValue = "";
+    if (defaultProvider === "ollama" && defaultModel) {
+        targetValue = "ollama:" + defaultModel;
+    } else if (defaultProvider && defaultProvider !== "ollama") {
+        // Find matching cloud provider option
+        for (const opt of providerSelect.options) {
+            if (opt.value.startsWith(defaultProvider + ":")) {
+                targetValue = opt.value;
+                break;
+            }
+        }
+    }
+    if (targetValue) {
+        providerSelect.value = targetValue;
+    }
+    currentSelectValue = providerSelect.value;
+}
+
+// --- Download progress ---
+function showDownloadProgress(model, percent, status) {
+    downloadBar.classList.remove("hidden");
+    downloadLabel.textContent = model + ": " + (status || "downloading...");
+    downloadFill.style.width = percent + "%";
+}
+
+function hideDownloadProgress() {
+    downloadBar.classList.add("hidden");
+    downloadFill.style.width = "0%";
+    downloadLabel.textContent = "";
+}
+
+// --- Voice select population ---
+function populateVoiceSelect(voices, defaultVoice) {
+    while (voiceSelect.firstChild) voiceSelect.removeChild(voiceSelect.firstChild);
+
+    const downloaded = voices.filter((v) => v.downloaded);
+    const available = voices.filter((v) => !v.downloaded);
+
+    if (downloaded.length > 0) {
+        const grp = document.createElement("optgroup");
+        grp.label = "Downloaded Voices";
+        downloaded.forEach((v) => {
+            const opt = document.createElement("option");
+            opt.value = v.id;
+            opt.textContent = v.name;
+            grp.appendChild(opt);
+        });
+        voiceSelect.appendChild(grp);
+    }
+
+    if (available.length > 0) {
+        const grp = document.createElement("optgroup");
+        grp.label = "Download on First Use";
+        available.forEach((v) => {
+            const opt = document.createElement("option");
+            opt.value = v.id;
+            opt.textContent = "\u2B07 " + v.name;
+            grp.appendChild(opt);
+        });
+        voiceSelect.appendChild(grp);
+    }
+
+    if (defaultVoice) {
+        voiceSelect.value = defaultVoice;
+    }
+    currentVoice = voiceSelect.value;
+}
+
 // --- WebSocket ---
 function sendMsg(type, payload = {}) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -73,7 +196,12 @@ function connect() {
     ws.onmessage = (ev) => {
         let msg;
         try { msg = JSON.parse(ev.data); } catch { return; }
-        handleMessage(msg);
+        try {
+            handleMessage(msg);
+        } catch (err) {
+            console.error("handleMessage error:", err);
+            setStatus("Client error: " + err.message, true);
+        }
     };
 
     ws.onerror = () => {
@@ -103,16 +231,28 @@ function handleMessage(msg) {
             if (msg.ice_servers && msg.ice_servers.length > 0) {
                 iceServers = msg.ice_servers;
             }
-            // Populate provider selector
-            if (msg.llm_providers) {
+            // Populate TTS voice selector
+            if (msg.tts_voices) {
+                populateVoiceSelect(msg.tts_voices, msg.tts_default_voice || "");
+            }
+            // Populate grouped model selector
+            if (msg.model_catalog) {
+                populateModelSelect(
+                    msg.model_catalog,
+                    msg.llm_default_provider || msg.llm_default || "",
+                    msg.llm_default_model || ""
+                );
+            } else if (msg.llm_providers) {
+                // Backward compat: flat provider list
                 while (providerSelect.firstChild) providerSelect.removeChild(providerSelect.firstChild);
                 msg.llm_providers.forEach((p) => {
                     const opt = document.createElement("option");
-                    opt.value = p.id;
+                    opt.value = p.id + ":";
                     opt.textContent = p.name;
                     if (p.id === msg.llm_default) opt.selected = true;
                     providerSelect.appendChild(opt);
                 });
+                currentSelectValue = providerSelect.value;
             }
             startWebRTC();
             break;
@@ -134,6 +274,56 @@ function handleMessage(msg) {
         case "agent_reply":
             addChatBubble(msg.text, "agent");
             setAgentSpeaking(true);
+            break;
+
+        case "pull_started":
+            pendingDownloadModel = msg.model;
+            showDownloadProgress(msg.model, 0, "starting...");
+            break;
+
+        case "pull_progress":
+            showDownloadProgress(msg.model, msg.percent || 0, msg.status || "downloading...");
+            break;
+
+        case "pull_complete":
+            showDownloadProgress(msg.model, 100, "complete!");
+            setTimeout(hideDownloadProgress, 1500);
+            break;
+
+        case "pull_error":
+            hideDownloadProgress();
+            console.error("Model pull failed:", msg.model, msg.message);
+            break;
+
+        case "model_catalog_update":
+            if (msg.model_catalog) {
+                const prevValue = currentSelectValue;
+                populateModelSelect(msg.model_catalog, "ollama", "");
+                // Auto-select the just-downloaded model if we know which one it was
+                if (pendingDownloadModel) {
+                    const autoVal = "ollama:" + pendingDownloadModel;
+                    providerSelect.value = autoVal;
+                    currentSelectValue = autoVal;
+                    sendMsg("set_model", { provider: "ollama", model: pendingDownloadModel });
+                    pendingDownloadModel = "";
+                } else {
+                    providerSelect.value = prevValue;
+                    currentSelectValue = prevValue;
+                }
+            }
+            break;
+
+        case "model_set":
+        case "provider_set":
+            // Clear chat when model changes so the new model starts fresh
+            while (conversationLog.firstChild) conversationLog.removeChild(conversationLog.firstChild);
+            break;
+
+        case "voice_set":
+            currentVoice = msg.voice_id || currentVoice;
+            if (msg.tts_voices) {
+                populateVoiceSelect(msg.tts_voices, currentVoice);
+            }
             break;
 
         case "error":
@@ -159,6 +349,7 @@ async function startWebRTC() {
 
     setStatus("Connecting audio...");
 
+    try {
     const config = { iceServers: iceServers.length > 0 ? iceServers : undefined };
     pc = new RTCPeerConnection(config);
 
@@ -166,7 +357,9 @@ async function startWebRTC() {
     pc.addTrack(micTrack, micStream);
 
     pc.oniceconnectionstatechange = () => {
-        if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+        const state = pc.iceConnectionState;
+        console.log("ICE state:", state);
+        if (state === "connected" || state === "completed") {
             connectScreen.classList.add("hidden");
             agentScreen.classList.remove("hidden");
             talkBtn.disabled = false;
@@ -174,6 +367,12 @@ async function startWebRTC() {
             if (audioEl) {
                 audioEl.play().catch(() => {});
             }
+        } else if (state === "failed") {
+            setStatus("Audio connection failed — check network", true);
+            connectBtn.disabled = false;
+            cleanupWebRTC();
+        } else if (state === "disconnected") {
+            setStatus("Audio disconnected — reconnecting...", true);
         }
     };
 
@@ -190,13 +389,25 @@ async function startWebRTC() {
     await pc.setLocalDescription(offer);
     await waitForIceGathering(pc);
     sendMsg("webrtc_offer", { sdp: pc.localDescription.sdp });
+    } catch (err) {
+        console.error("WebRTC setup error:", err);
+        setStatus("WebRTC error: " + err.message, true);
+        connectBtn.disabled = false;
+    }
 }
 
 function waitForIceGathering(pc) {
     return new Promise((resolve) => {
         if (pc.iceGatheringState === "complete") { resolve(); return; }
+        const timer = setTimeout(() => {
+            console.warn("ICE gathering timed out after 10s, proceeding with partial candidates");
+            resolve();
+        }, 10000);
         pc.onicegatheringstatechange = () => {
-            if (pc.iceGatheringState === "complete") resolve();
+            if (pc.iceGatheringState === "complete") {
+                clearTimeout(timer);
+                resolve();
+            }
         };
     });
 }
@@ -214,10 +425,11 @@ function cleanupWebRTC() {
         micStream = null;
     }
     isRecording = false;
-    talkBtn.textContent = "Hold to Talk";
+    talkBtn.textContent = "Hold to Speak";
     talkBtn.classList.remove("recording");
     talkBtn.disabled = true;
     setAgentSpeaking(false);
+    hideDownloadProgress();
 }
 
 // --- Hold to Talk ---
@@ -225,7 +437,7 @@ function startTalking() {
     if (!micStream || isRecording) return;
     isRecording = true;
     talkBtn.classList.add("recording");
-    talkBtn.textContent = "Listening... release to send";
+    talkBtn.textContent = "Transmitting\u2026";
 
     // Stop any current agent audio
     if (agentSpeaking) {
@@ -240,7 +452,7 @@ function stopTalking() {
     if (!isRecording) return;
     isRecording = false;
     talkBtn.classList.remove("recording");
-    talkBtn.textContent = "Hold to Talk";
+    talkBtn.textContent = "Hold to Speak";
     sendMsg("mic_stop");
 }
 
@@ -256,8 +468,30 @@ setInterval(() => { sendMsg("ping"); }, 15000);
 // --- Event listeners ---
 connectBtn.addEventListener("click", connect);
 stopBtn.addEventListener("click", stopSpeaking);
+
 providerSelect.addEventListener("change", () => {
-    sendMsg("set_provider", { provider: providerSelect.value });
+    const value = providerSelect.value;
+    const colonIdx = value.indexOf(":");
+    const provider = colonIdx > -1 ? value.substring(0, colonIdx) : value;
+    const model = colonIdx > -1 ? value.substring(colonIdx + 1) : "";
+
+    if (provider === "download") {
+        // Trigger download, revert select to previous value
+        providerSelect.value = currentSelectValue;
+        sendMsg("pull_model", { model: model });
+    } else {
+        // Switch model
+        currentSelectValue = value;
+        sendMsg("set_model", { provider: provider, model: model });
+    }
+});
+
+voiceSelect.addEventListener("change", () => {
+    const voiceId = voiceSelect.value;
+    if (voiceId && voiceId !== currentVoice) {
+        currentVoice = voiceId;
+        sendMsg("set_voice", { voice_id: voiceId });
+    }
 });
 
 tokenInput.addEventListener("keydown", (e) => {

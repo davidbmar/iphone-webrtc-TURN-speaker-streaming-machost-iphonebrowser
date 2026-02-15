@@ -1,4 +1,4 @@
-"""Piper TTS wrapper — text to 48kHz PCM with resampling."""
+"""Piper TTS wrapper — text to 48kHz PCM with resampling and multi-voice support."""
 
 import logging
 import os
@@ -12,56 +12,89 @@ log = logging.getLogger("tts")
 
 TARGET_RATE = 48000  # WebRTC Opus expects 48kHz
 
-# Model config
-MODEL_NAME = "en_US-lessac-medium"
 MODEL_DIR = Path(__file__).resolve().parent.parent / "models"
-MODEL_URL = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/{MODEL_NAME}.onnx"
-CONFIG_URL = f"{MODEL_URL}.json"
 
-# Lazy-loaded Piper voice
-_voice = None
+# ── Voice catalog ─────────────────────────────────────────────
+# Each entry maps to a HuggingFace Piper voice model.
+# URL pattern: https://huggingface.co/rhasspy/piper-voices/resolve/main/{lang}/{locale}/{voice_name}/{quality}/{id}.onnx
+
+VOICE_CATALOG = [
+    {"id": "en_US-lessac-medium",       "name": "Lessac (US)",        "lang": "en", "locale": "en_US", "voice_name": "lessac",       "quality": "medium"},
+    {"id": "en_US-hfc_female-medium",   "name": "HFC Female (US)",    "lang": "en", "locale": "en_US", "voice_name": "hfc_female",   "quality": "medium"},
+    {"id": "en_US-hfc_male-medium",     "name": "HFC Male (US)",      "lang": "en", "locale": "en_US", "voice_name": "hfc_male",     "quality": "medium"},
+    {"id": "en_US-libritts_r-medium",   "name": "LibriTTS (US)",      "lang": "en", "locale": "en_US", "voice_name": "libritts_r",   "quality": "medium"},
+    {"id": "en_GB-alba-medium",         "name": "Alba (UK)",          "lang": "en", "locale": "en_GB", "voice_name": "alba",         "quality": "medium"},
+    {"id": "en_GB-aru-medium",          "name": "Aru (UK)",           "lang": "en", "locale": "en_GB", "voice_name": "aru",          "quality": "medium"},
+    {"id": "de_DE-thorsten-medium",     "name": "Thorsten (German)",  "lang": "de", "locale": "de_DE", "voice_name": "thorsten",     "quality": "medium"},
+    {"id": "fr_FR-siwis-medium",        "name": "Siwis (French)",     "lang": "fr", "locale": "fr_FR", "voice_name": "siwis",        "quality": "medium"},
+    {"id": "es_ES-davefx-medium",       "name": "DaveFX (Spanish)",   "lang": "es", "locale": "es_ES", "voice_name": "davefx",       "quality": "medium"},
+]
+
+DEFAULT_VOICE = "en_US-lessac-medium"
+
+_CATALOG_BY_ID = {v["id"]: v for v in VOICE_CATALOG}
+
+# In-memory cache: voice_id → PiperVoice instance
+_voice_cache: dict = {}
 
 
-def _download_model():
-    """Download the Piper ONNX model if not present."""
+def _model_url(voice_id: str) -> tuple[str, str]:
+    """Build HuggingFace download URLs for a voice's .onnx and .onnx.json."""
+    entry = _CATALOG_BY_ID[voice_id]
+    base = (
+        f"https://huggingface.co/rhasspy/piper-voices/resolve/main/"
+        f"{entry['lang']}/{entry['locale']}/{entry['voice_name']}/{entry['quality']}/{voice_id}"
+    )
+    return f"{base}.onnx", f"{base}.onnx.json"
+
+
+def _download_model(voice_id: str) -> Path:
+    """Download the Piper ONNX model + config if not already on disk."""
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    onnx_path = MODEL_DIR / f"{MODEL_NAME}.onnx"
-    config_path = MODEL_DIR / f"{MODEL_NAME}.onnx.json"
+    onnx_path = MODEL_DIR / f"{voice_id}.onnx"
+    config_path = MODEL_DIR / f"{voice_id}.onnx.json"
+
+    onnx_url, config_url = _model_url(voice_id)
 
     if not onnx_path.exists():
-        log.info("Downloading voice model: %s (~60MB)...", MODEL_NAME)
-        urllib.request.urlretrieve(MODEL_URL, onnx_path)
+        log.info("Downloading voice model: %s ...", voice_id)
+        urllib.request.urlretrieve(onnx_url, onnx_path)
         log.info("Model downloaded: %s", onnx_path)
 
     if not config_path.exists():
-        log.info("Downloading voice config...")
-        urllib.request.urlretrieve(CONFIG_URL, config_path)
+        log.info("Downloading voice config: %s ...", voice_id)
+        urllib.request.urlretrieve(config_url, config_path)
         log.info("Config downloaded: %s", config_path)
 
     return onnx_path
 
 
-def _get_voice():
-    """Load the Piper voice model on first use."""
-    global _voice
-    if _voice is not None:
-        return _voice
+def _get_voice(voice_id: str = ""):
+    """Load a Piper voice model, using the cache for repeated calls."""
+    voice_id = voice_id or DEFAULT_VOICE
+    if voice_id in _voice_cache:
+        return _voice_cache[voice_id]
+
+    if voice_id not in _CATALOG_BY_ID:
+        log.warning("Unknown voice %r, falling back to default", voice_id)
+        voice_id = DEFAULT_VOICE
 
     from piper import PiperVoice
 
-    model_path = _download_model()
+    model_path = _download_model(voice_id)
     log.info("Loading Piper TTS voice: %s", model_path)
-    _voice = PiperVoice.load(str(model_path))
-    log.info("Piper voice loaded (native rate: %d Hz)", _voice.config.sample_rate)
-    return _voice
+    voice = PiperVoice.load(str(model_path))
+    log.info("Piper voice loaded: %s (native rate: %d Hz)", voice_id, voice.config.sample_rate)
+    _voice_cache[voice_id] = voice
+    return voice
 
 
-def synthesize(text: str) -> bytes:
+def synthesize(text: str, voice_id: str = "") -> bytes:
     """Convert text to 48kHz mono int16 PCM bytes.
 
-    Pipeline: text → Piper TTS (22050Hz chunks) → concat → resample → 48kHz PCM
+    Pipeline: text -> Piper TTS (22050Hz chunks) -> concat -> resample -> 48kHz PCM
     """
-    voice = _get_voice()
+    voice = _get_voice(voice_id)
     native_rate = voice.config.sample_rate  # typically 22050
 
     # Synthesize — yields AudioChunk objects
@@ -85,8 +118,9 @@ def synthesize(text: str) -> bytes:
     # Clip and convert back to int16
     resampled = np.clip(resampled, -32768, 32767).astype(np.int16)
 
-    log.info(
-        "TTS: %d chars → %d samples @ %dHz → %d samples @ %dHz (%.2fs)",
+    log.debug(
+        "TTS [%s]: %d chars -> %d samples @ %dHz -> %d samples @ %dHz (%.2fs)",
+        voice_id or DEFAULT_VOICE,
         len(text),
         len(samples),
         native_rate,
@@ -95,3 +129,16 @@ def synthesize(text: str) -> bytes:
         len(resampled) / TARGET_RATE,
     )
     return resampled.tobytes()
+
+
+def list_voices() -> list[dict]:
+    """Return voice catalog with download status for each voice."""
+    result = []
+    for entry in VOICE_CATALOG:
+        onnx_path = MODEL_DIR / f"{entry['id']}.onnx"
+        result.append({
+            "id": entry["id"],
+            "name": entry["name"],
+            "downloaded": onnx_path.exists(),
+        })
+    return result
