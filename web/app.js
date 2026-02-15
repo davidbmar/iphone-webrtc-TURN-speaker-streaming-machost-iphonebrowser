@@ -250,8 +250,8 @@ function stopSpeaking() {
     setAgentSpeaking(false);
 }
 
-// --- Keepalive ---
-setInterval(() => { sendMsg("ping"); }, 25000);
+// --- Keepalive (backs up server-side WebSocket heartbeat) ---
+setInterval(() => { sendMsg("ping"); }, 15000);
 
 // --- Event listeners ---
 connectBtn.addEventListener("click", connect);

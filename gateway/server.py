@@ -42,7 +42,7 @@ async def handle_index(request: web.Request) -> web.Response:
 # ── WebSocket handler ─────────────────────────────────────────
 
 async def handle_ws(request: web.Request) -> web.WebSocketResponse:
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(heartbeat=20)
     await ws.prepare(request)
     log.info("WebSocket connected from %s", request.remote)
 
