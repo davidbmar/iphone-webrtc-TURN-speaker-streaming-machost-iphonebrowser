@@ -45,7 +45,7 @@ echo ""
 if ! lsof -i :"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   echo "  Starting HTTPS server on 0.0.0.0:$PORT..."
   cd "$REPO_ROOT"
-  HTTPS=1 LOCAL_IP="$LOCAL_IP" python3 -m gateway.server > "$LOG_FILE" 2>&1 &
+  HTTPS=1 LOCAL_IP="$LOCAL_IP" /usr/bin/python3 -m gateway.server > "$LOG_FILE" 2>&1 &
   SERVER_PID=$!
   echo "  Server PID: $SERVER_PID"
 

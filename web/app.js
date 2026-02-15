@@ -1,23 +1,15 @@
 "use strict";
 
 // --- DOM refs ---
-const wsDot = document.getElementById("ws-dot");
-const wsStatus = document.getElementById("ws-status");
-const rtcDot = document.getElementById("rtc-dot");
-const rtcStatus = document.getElementById("rtc-status");
+const connectScreen = document.getElementById("connect-screen");
+const agentScreen = document.getElementById("agent-screen");
 const tokenInput = document.getElementById("token-input");
 const connectBtn = document.getElementById("connect-btn");
-const controlsSection = document.getElementById("controls-section");
-const voiceSelect = document.getElementById("voice-select");
-const startBtn = document.getElementById("start-btn");
+const connectStatus = document.getElementById("connect-status");
+const conversationLog = document.getElementById("conversation-log");
+const talkBtn = document.getElementById("talk-btn");
 const stopBtn = document.getElementById("stop-btn");
-const ttsSection = document.getElementById("tts-section");
-const ttsInput = document.getElementById("tts-input");
-const speakBtn = document.getElementById("speak-btn");
-const sttSection = document.getElementById("stt-section");
-const recordBtn = document.getElementById("record-btn");
-const transcriptionDisplay = document.getElementById("transcription-display");
-const debugLog = document.getElementById("debug-log");
+const providerSelect = document.getElementById("provider-select");
 
 // --- State ---
 let iceServers = window.__CONFIG__ || [];
@@ -26,16 +18,35 @@ let pc = null;
 let audioEl = null;
 let micStream = null;
 let isRecording = false;
+let agentSpeaking = false;
 
-// --- Debug logging ---
-function log(msg, cls = "info") {
-    const line = document.createElement("div");
-    line.className = cls;
-    const ts = new Date().toLocaleTimeString("en-US", { hour12: false });
-    line.textContent = `[${ts}] ${msg}`;
-    debugLog.appendChild(line);
-    debugLog.scrollTop = debugLog.scrollHeight;
-    console.log(`[${cls}] ${msg}`);
+// --- Chat bubble helpers ---
+function addChatBubble(text, role) {
+    const thinking = conversationLog.querySelector(".thinking");
+    if (thinking) thinking.remove();
+
+    const bubble = document.createElement("div");
+    bubble.className = "msg msg-" + role;
+    bubble.textContent = text;
+    conversationLog.appendChild(bubble);
+    conversationLog.scrollTop = conversationLog.scrollHeight;
+}
+
+function showThinking() {
+    const el = document.createElement("div");
+    el.className = "msg msg-agent thinking";
+    el.textContent = "Thinking...";
+    conversationLog.appendChild(el);
+    conversationLog.scrollTop = conversationLog.scrollHeight;
+}
+
+function setAgentSpeaking(speaking) {
+    agentSpeaking = speaking;
+    if (speaking) {
+        stopBtn.classList.remove("hidden");
+    } else {
+        stopBtn.classList.add("hidden");
+    }
 }
 
 // --- WebSocket ---
@@ -44,151 +55,129 @@ function sendMsg(type, payload = {}) {
     ws.send(JSON.stringify({ type, ...payload }));
 }
 
-function setWsState(state) {
-    wsDot.className = "status-dot " + state;
-    const labels = { connected: "Connected", error: "Disconnected", connecting: "Connecting..." };
-    wsStatus.textContent = labels[state] || state;
-}
-
 function connect() {
     const token = tokenInput.value.trim();
-    if (!token) { log("Enter a token first", "error"); return; }
+    if (!token) { setStatus("Enter a token", true); return; }
 
     connectBtn.disabled = true;
-    setWsState("connecting");
+    setStatus("Connecting...");
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     ws = new WebSocket(`${proto}//${location.host}/ws`);
 
     ws.onopen = () => {
-        log("WebSocket opened, sending hello...");
+        setStatus("Authenticating...");
         sendMsg("hello", { token });
     };
 
     ws.onmessage = (ev) => {
         let msg;
-        try { msg = JSON.parse(ev.data); } catch { log("Bad JSON from server", "error"); return; }
+        try { msg = JSON.parse(ev.data); } catch { return; }
         handleMessage(msg);
     };
 
     ws.onerror = () => {
-        log("WebSocket error", "error");
-        setWsState("error");
+        setStatus("Connection failed", true);
         connectBtn.disabled = false;
     };
 
     ws.onclose = () => {
-        log("WebSocket closed");
-        setWsState("error");
+        if (!agentScreen.classList.contains("hidden")) {
+            agentScreen.classList.add("hidden");
+            connectScreen.classList.remove("hidden");
+        }
+        setStatus("Disconnected", true);
         connectBtn.disabled = false;
-        controlsSection.classList.add("hidden");
-        ttsSection.classList.add("hidden");
-        sttSection.classList.add("hidden");
         cleanupWebRTC();
     };
+}
+
+function setStatus(text, isError) {
+    connectStatus.textContent = text;
+    connectStatus.className = "connect-status" + (isError ? " error" : "");
 }
 
 function handleMessage(msg) {
     switch (msg.type) {
         case "hello_ack":
-            log("Authenticated! Received " + msg.voices.length + " voices", "success");
-            // Use TURN credentials from server (Twilio) if provided
             if (msg.ice_servers && msg.ice_servers.length > 0) {
                 iceServers = msg.ice_servers;
-                log("Got " + iceServers.length + " ICE servers from server", "success");
             }
-            setWsState("connected");
-            populateVoices(msg.voices);
-            controlsSection.classList.remove("hidden");
-            ttsSection.classList.remove("hidden");
-            sttSection.classList.remove("hidden");
+            // Populate provider selector
+            if (msg.llm_providers) {
+                while (providerSelect.firstChild) providerSelect.removeChild(providerSelect.firstChild);
+                msg.llm_providers.forEach((p) => {
+                    const opt = document.createElement("option");
+                    opt.value = p.id;
+                    opt.textContent = p.name;
+                    if (p.id === msg.llm_default) opt.selected = true;
+                    providerSelect.appendChild(opt);
+                });
+            }
             startWebRTC();
             break;
 
         case "webrtc_answer":
-            log("Received WebRTC answer");
             handleWebRTCAnswer(msg.sdp);
             break;
 
         case "transcription":
-            log("Transcription: " + msg.text, "success");
-            transcriptionDisplay.textContent = msg.text;
+            if (!msg.partial && msg.text) {
+                addChatBubble(msg.text, "user");
+            }
+            break;
+
+        case "agent_thinking":
+            showThinking();
+            break;
+
+        case "agent_reply":
+            addChatBubble(msg.text, "agent");
+            setAgentSpeaking(true);
+            break;
+
+        case "error":
+            console.error("Server error:", msg.message);
             break;
 
         case "pong":
             break;
-
-        case "error":
-            log("Server error: " + msg.message, "error");
-            break;
-
-        default:
-            log("Unknown message type: " + msg.type);
     }
-}
-
-// --- Voice dropdown ---
-function populateVoices(voices) {
-    // Clear existing options using safe DOM methods
-    while (voiceSelect.firstChild) {
-        voiceSelect.removeChild(voiceSelect.firstChild);
-    }
-    voices.forEach((v) => {
-        const opt = document.createElement("option");
-        opt.value = v.id;
-        opt.textContent = `${v.name} — ${v.description}`;
-        voiceSelect.appendChild(opt);
-    });
-    voiceSelect.disabled = false;
 }
 
 // --- WebRTC ---
 async function startWebRTC() {
-    log("Starting WebRTC negotiation...");
-    setRtcState("connecting");
+    setStatus("Setting up mic...");
 
-    // Request mic access — needed before offer so track is in SDP
     try {
         micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        log("Mic access granted", "success");
     } catch (e) {
-        log("Mic access denied — STT disabled: " + e.message, "error");
-        micStream = null;
+        setStatus("Mic access denied", true);
+        connectBtn.disabled = false;
+        return;
     }
+
+    setStatus("Connecting audio...");
 
     const config = { iceServers: iceServers.length > 0 ? iceServers : undefined };
     pc = new RTCPeerConnection(config);
 
-    if (micStream) {
-        // Add mic track — starts muted, unmuted when recording
-        // Add mic track — always enabled, server controls when to buffer
-        const micTrack = micStream.getAudioTracks()[0];
-        pc.addTrack(micTrack, micStream);
-    } else {
-        // No mic — receive-only
-        pc.addTransceiver("audio", { direction: "recvonly" });
-    }
-
-    pc.onicecandidate = (ev) => {
-        if (ev.candidate) {
-            const typ = ev.candidate.candidate.match(/typ (\w+)/);
-            log("ICE candidate: " + (typ ? typ[1] : "unknown"));
-        }
-    };
+    const micTrack = micStream.getAudioTracks()[0];
+    pc.addTrack(micTrack, micStream);
 
     pc.oniceconnectionstatechange = () => {
-        log("ICE state: " + pc.iceConnectionState);
         if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
-            setRtcState("connected");
-            startBtn.disabled = false;
-            if (micStream) recordBtn.disabled = false;
-        } else if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
-            setRtcState("error");
+            connectScreen.classList.add("hidden");
+            agentScreen.classList.remove("hidden");
+            talkBtn.disabled = false;
+
+            if (audioEl) {
+                audioEl.play().catch(() => {});
+            }
         }
     };
 
     pc.ontrack = (ev) => {
-        log("Received remote audio track", "success");
         if (audioEl) { audioEl.srcObject = null; audioEl.remove(); }
         audioEl = document.createElement("audio");
         audioEl.autoplay = true;
@@ -197,14 +186,9 @@ async function startWebRTC() {
         document.body.appendChild(audioEl);
     };
 
-    // Create offer and wait for ICE gathering to complete
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-
-    // Wait for ICE gathering to finish (aiortc needs all candidates bundled)
     await waitForIceGathering(pc);
-
-    log("ICE gathering complete, sending offer");
     sendMsg("webrtc_offer", { sdp: pc.localDescription.sdp });
 }
 
@@ -218,23 +202,8 @@ function waitForIceGathering(pc) {
 }
 
 async function handleWebRTCAnswer(sdp) {
-    if (!pc) { log("No PeerConnection for answer", "error"); return; }
-    try {
-        await pc.setRemoteDescription({ type: "answer", sdp });
-        log("Remote description set", "success");
-    } catch (e) {
-        log("Failed to set answer: " + e.message, "error");
-    }
-}
-
-function setRtcState(state) {
-    rtcDot.className = "status-dot " + state;
-    const labels = {
-        connected: "WebRTC connected",
-        error: "WebRTC failed",
-        connecting: "Negotiating..."
-    };
-    rtcStatus.textContent = labels[state] || state;
+    if (!pc) return;
+    await pc.setRemoteDescription({ type: "answer", sdp });
 }
 
 function cleanupWebRTC() {
@@ -245,69 +214,40 @@ function cleanupWebRTC() {
         micStream = null;
     }
     isRecording = false;
-    recordBtn.classList.remove("recording");
-    recordBtn.textContent = "Record";
-    recordBtn.disabled = true;
-    setRtcState("");
-    startBtn.disabled = true;
-    stopBtn.disabled = true;
+    talkBtn.textContent = "Hold to Talk";
+    talkBtn.classList.remove("recording");
+    talkBtn.disabled = true;
+    setAgentSpeaking(false);
 }
 
-// --- Start / Stop audio ---
-function startAudio() {
-    const voiceId = voiceSelect.value;
-    if (!voiceId) { log("Select a voice first", "error"); return; }
-    log("Starting audio: " + voiceId);
-    sendMsg("start", { voice_id: voiceId });
-    startBtn.disabled = true;
-    stopBtn.disabled = false;
+// --- Hold to Talk ---
+function startTalking() {
+    if (!micStream || isRecording) return;
+    isRecording = true;
+    talkBtn.classList.add("recording");
+    talkBtn.textContent = "Listening... release to send";
 
-    // iOS Safari: ensure audio element plays (needs gesture)
-    if (audioEl) {
-        audioEl.play().catch(() => log("Audio play blocked by browser", "error"));
+    // Stop any current agent audio
+    if (agentSpeaking) {
+        sendMsg("stop_speaking");
+        setAgentSpeaking(false);
     }
+
+    sendMsg("mic_start");
 }
 
-function stopAudio() {
-    log("Stopping audio");
-    sendMsg("stop");
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
+function stopTalking() {
+    if (!isRecording) return;
+    isRecording = false;
+    talkBtn.classList.remove("recording");
+    talkBtn.textContent = "Hold to Talk";
+    sendMsg("mic_stop");
 }
 
-// --- TTS ---
-function speakText() {
-    const text = ttsInput.value.trim();
-    if (!text) { log("Enter text to speak", "error"); return; }
-    log("Speaking: " + text);
-    sendMsg("speak", { text });
-
-    // iOS Safari: ensure audio element plays (needs gesture)
-    if (audioEl) {
-        audioEl.play().catch(() => log("Audio play blocked by browser", "error"));
-    }
-}
-
-// --- Record (STT) ---
-function toggleRecord() {
-    if (!micStream) { log("No mic access", "error"); return; }
-
-    if (!isRecording) {
-        // Start recording
-        isRecording = true;
-        recordBtn.classList.add("recording");
-        recordBtn.textContent = "Stop Recording";
-        transcriptionDisplay.textContent = "";
-        sendMsg("mic_start");
-        log("Recording started...");
-    } else {
-        // Stop recording
-        isRecording = false;
-        recordBtn.classList.remove("recording");
-        recordBtn.textContent = "Record";
-        sendMsg("mic_stop");
-        log("Recording stopped, transcribing...");
-    }
+// --- Stop agent audio ---
+function stopSpeaking() {
+    sendMsg("stop_speaking");
+    setAgentSpeaking(false);
 }
 
 // --- Keepalive ---
@@ -315,19 +255,35 @@ setInterval(() => { sendMsg("ping"); }, 25000);
 
 // --- Event listeners ---
 connectBtn.addEventListener("click", connect);
-startBtn.addEventListener("click", startAudio);
-stopBtn.addEventListener("click", stopAudio);
-speakBtn.addEventListener("click", speakText);
-recordBtn.addEventListener("click", toggleRecord);
+stopBtn.addEventListener("click", stopSpeaking);
+providerSelect.addEventListener("change", () => {
+    sendMsg("set_provider", { provider: providerSelect.value });
+});
 
-// Allow Enter key to connect
 tokenInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") connect();
 });
 
-// Allow Enter key to speak
-ttsInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") speakText();
+// Hold-to-talk: touch events (mobile)
+talkBtn.addEventListener("touchstart", (e) => {
+    e.preventDefault(); // Prevent long-press menu & ghost clicks
+    startTalking();
+});
+talkBtn.addEventListener("touchend", (e) => {
+    e.preventDefault();
+    stopTalking();
+});
+talkBtn.addEventListener("touchcancel", (e) => {
+    e.preventDefault();
+    stopTalking();
 });
 
-log("Client ready. Enter token and connect.");
+// Hold-to-talk: mouse events (desktop fallback)
+talkBtn.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return; // Left click only
+    startTalking();
+});
+talkBtn.addEventListener("mouseup", () => { stopTalking(); });
+talkBtn.addEventListener("mouseleave", () => {
+    if (isRecording) stopTalking();
+});

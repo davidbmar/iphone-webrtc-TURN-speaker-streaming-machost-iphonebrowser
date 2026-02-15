@@ -4,13 +4,14 @@ import asyncio
 import json
 import logging
 import os
+import re
 
 import numpy as np
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 
 from engine.adapter import create_generator
 from engine.types import AudioChunk
-from gateway.audio.pcm_ring_buffer import PCMRingBuffer
+from gateway.audio.audio_queue import AudioQueue
 from gateway.audio.webrtc_audio_source import WebRTCAudioSource
 
 FRAME_SAMPLES = 960  # 20ms at 48kHz
@@ -34,19 +35,19 @@ def ice_servers_to_rtc(servers: list) -> list:
     return result
 
 
-class BufferedGenerator:
-    """Reads PCM from a ring buffer in 20ms chunks.
+class QueuedGenerator:
+    """Reads PCM from an AudioQueue FIFO in 20ms chunks.
 
     Same interface as SineWaveGenerator (next_chunk() → AudioChunk)
     so WebRTCAudioSource doesn't need to change.
     """
 
-    def __init__(self, ring_buffer: PCMRingBuffer):
-        self.ring_buffer = ring_buffer
+    def __init__(self, queue: AudioQueue):
+        self.queue = queue
 
     def next_chunk(self) -> AudioChunk:
-        """Read one 20ms frame (960 samples = 1920 bytes) from the ring buffer."""
-        pcm = self.ring_buffer.read(FRAME_SAMPLES * 2)  # 2 bytes per int16 sample
+        """Read one 20ms frame (960 samples = 1920 bytes) from the queue."""
+        pcm = self.queue.read(FRAME_SAMPLES * 2)  # 2 bytes per int16 sample
         return AudioChunk(samples=pcm, sample_rate=SAMPLE_RATE, channels=1)
 
 
@@ -60,15 +61,18 @@ class Session:
         self._audio_source = WebRTCAudioSource()
         self._generator = None
 
-        # Ring buffer for TTS audio (5 seconds capacity at 48kHz mono 16-bit)
-        self._ring_buffer = PCMRingBuffer(capacity=48000 * 2 * 5)
-        self._tts_generator = BufferedGenerator(self._ring_buffer)
+        # FIFO audio queue for TTS — never drops audio, drains sentence by sentence
+        self._audio_queue = AudioQueue()
+        self._tts_generator = QueuedGenerator(self._audio_queue)
 
         # Mic recording state
         self._recording = False
         self._mic_frames: list[bytes] = []
         self._mic_track = None
         self._mic_recv_task: asyncio.Task | None = None
+        self._transcribe_task: asyncio.Task | None = None
+        self._on_transcription = None  # callback for partial results
+        self._transcribe_interval = 5  # seconds between partial transcriptions
 
         # Log state changes
         @self._pc.on("connectionstatechange")
@@ -123,24 +127,41 @@ class Session:
         self._generator = None
         log.info("Audio stopped")
 
-    async def speak_text(self, text: str):
-        """Run TTS on text and feed audio into the WebRTC track.
+    def stop_speaking(self):
+        """Stop TTS playback — clear the audio queue and detach generator."""
+        self._audio_queue.clear()
+        self._audio_source.clear_generator()
+        log.info("TTS playback stopped, queue cleared")
 
-        Synthesis runs in a thread pool to avoid blocking the event loop.
-        The buffered generator is attached so WebRTC reads from the ring buffer.
+    @staticmethod
+    def _split_sentences(text: str) -> list[str]:
+        """Split text into sentences for incremental TTS."""
+        # Split on sentence-ending punctuation followed by whitespace
+        parts = re.split(r'(?<=[.!?])\s+', text.strip())
+        return [p for p in parts if p.strip()]
+
+    async def speak_text(self, text: str):
+        """Run TTS sentence-by-sentence and enqueue audio into the FIFO.
+
+        Each sentence is synthesized in a thread, then enqueued immediately.
+        The WebRTC track starts playing the first sentence while later
+        sentences are still being synthesized.
         """
         from engine.tts import synthesize
 
         # Ensure the TTS generator is attached to the audio source
         self._audio_source.set_generator(self._tts_generator)
 
-        # Run TTS in a thread (CPU-bound ONNX inference)
-        loop = asyncio.get_event_loop()
-        pcm_48k = await loop.run_in_executor(None, synthesize, text)
+        sentences = self._split_sentences(text)
+        log.info("TTS: %d sentences to synthesize", len(sentences))
 
-        if pcm_48k:
-            self._ring_buffer.write(pcm_48k)
-            log.info("Wrote %d bytes of TTS audio to ring buffer", len(pcm_48k))
+        loop = asyncio.get_event_loop()
+        for i, sentence in enumerate(sentences):
+            pcm_48k = await loop.run_in_executor(None, synthesize, sentence)
+            if pcm_48k:
+                self._audio_queue.enqueue(pcm_48k)
+                log.info("TTS sentence %d/%d enqueued: %d bytes — %r",
+                         i + 1, len(sentences), len(pcm_48k), sentence[:60])
 
     async def _recv_mic_audio(self, track):
         """Background task: continuously receive audio frames from the browser mic track."""
@@ -174,46 +195,62 @@ class Session:
                 pcm = flat.astype(np.int16).tobytes()
                 self._mic_frames.append(pcm)
 
-    def start_recording(self):
-        """Start buffering incoming mic audio frames."""
+    def start_recording(self, on_transcription=None):
+        """Start buffering incoming mic audio frames.
+
+        Args:
+            on_transcription: async callback(text, partial) called with
+                              partial transcriptions every TRANSCRIBE_INTERVAL seconds.
+        """
         self._mic_frames.clear()
         self._recording = True
-        log.info("Mic recording started")
+        self._on_transcription = on_transcription
+        self._transcribe_task = asyncio.ensure_future(self._periodic_transcribe())
+        log.info("Mic recording started (live transcription enabled)")
+
+    async def _periodic_transcribe(self):
+        """Background task: transcribe accumulated audio every N seconds."""
+        from engine.stt import transcribe
+
+        interval = self._transcribe_interval
+        loop = asyncio.get_event_loop()
+
+        while self._recording:
+            await asyncio.sleep(interval)
+            if not self._recording:
+                break
+            if not self._mic_frames:
+                continue
+
+            # Snapshot all audio accumulated so far (don't clear — rolling full)
+            pcm_data = b"".join(self._mic_frames)
+            log.info("Partial transcription: %d frames, %d bytes", len(self._mic_frames), len(pcm_data))
+
+            text = await loop.run_in_executor(None, transcribe, pcm_data, SAMPLE_RATE)
+
+            if text and self._on_transcription and self._recording:
+                await self._on_transcription(text, True)
 
     async def stop_recording(self) -> str:
-        """Stop recording, concatenate frames, run STT, return text."""
+        """Stop recording, cancel periodic task, do final transcription."""
         self._recording = False
+
+        # Cancel periodic transcription
+        if self._transcribe_task:
+            self._transcribe_task.cancel()
+            self._transcribe_task = None
 
         if not self._mic_frames:
             log.warning("No mic frames captured")
             return ""
 
-        # Concatenate all buffered PCM frames
+        # Final transcription of all audio
         pcm_data = b"".join(self._mic_frames)
         num_frames = len(self._mic_frames)
         self._mic_frames.clear()
 
-        # Debug: check audio levels and save WAV
-        samples = np.frombuffer(pcm_data, dtype=np.int16)
-        log.info(
-            "Mic recording stopped: %d frames, %d bytes, range=[%d, %d], rms=%.1f",
-            num_frames, len(pcm_data), samples.min(), samples.max(),
-            np.sqrt(np.mean(samples.astype(np.float64) ** 2)),
-        )
+        log.info("Mic recording stopped: %d frames, %d bytes", num_frames, len(pcm_data))
 
-        # Save debug WAV
-        import wave
-        from pathlib import Path
-        wav_path = Path(__file__).resolve().parent.parent / "logs" / "mic_debug.wav"
-        wav_path.parent.mkdir(exist_ok=True)
-        with wave.open(str(wav_path), "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(SAMPLE_RATE)
-            wf.writeframes(pcm_data)
-        log.info("Saved mic debug WAV: %s", wav_path)
-
-        # Run STT in thread pool (CPU-bound Whisper inference)
         from engine.stt import transcribe
         loop = asyncio.get_event_loop()
         text = await loop.run_in_executor(None, transcribe, pcm_data, SAMPLE_RATE)
@@ -223,6 +260,8 @@ class Session:
         """Tear down the peer connection."""
         self.stop_audio()
         self._recording = False
+        if self._transcribe_task:
+            self._transcribe_task.cancel()
         if self._mic_recv_task:
             self._mic_recv_task.cancel()
         await self._pc.close()

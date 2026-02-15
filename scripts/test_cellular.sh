@@ -31,7 +31,7 @@ echo "  cloudflared: $(cloudflared --version 2>&1 | head -1)"
 if ! lsof -i :"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   echo "  Starting server on 0.0.0.0:$PORT..."
   cd "$REPO_ROOT"
-  python3 -m gateway.server > "$LOG_FILE" 2>&1 &
+  /usr/bin/python3 -m gateway.server > "$LOG_FILE" 2>&1 &
   SERVER_PID=$!
   echo "  Server PID: $SERVER_PID"
 

@@ -5,4 +5,11 @@
     "date": "2026-02-14",
     "file": "S-2026-02-14-2002-mic-stt-pipeline.md"
   }
+,
+  {
+    "sessionId": "S-2026-02-15-0059-voice-agent-simple-loop",
+    "title": "Milestone 6 — Voice Agent Simple Loop (mic → STT → LLM → TTS → speaker)",
+    "date": "2026-02-15",
+    "file": "S-2026-02-15-0059-voice-agent-simple-loop.md"
+  }
 ]

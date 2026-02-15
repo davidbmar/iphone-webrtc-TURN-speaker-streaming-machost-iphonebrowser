@@ -1,10 +1,12 @@
-# WebRTC + TURN Speaker Streaming
+# Voice Agent — WebRTC + TURN Speaker Streaming
 
-Stream generated audio from a Mac host to an iPhone browser client via WebRTC, with TURN relay support for NAT traversal. Bidirectional: speak into iPhone mic → server transcribes with Whisper STT.
+Voice agent running on a Mac host: speak into iPhone mic → Whisper STT → LLM (Claude/OpenAI/Ollama) → Piper TTS → hear response through iPhone speaker via WebRTC.
 
-| TTS + STT UI |
-|:---:|
-| ![Connected](docs/screenshots/webrtc-stt-ui.png) |
+| Voice Agent (Ollama) | Connect | Recording |
+|:---:|:---:|:---:|
+| ![Agent](docs/screenshots/agent-ollama.png) | ![Connect](docs/screenshots/connect-screen.png) | ![Recording](docs/screenshots/recording-screen.png) |
+
+Works with **Ollama** (free, local), **Claude** (Anthropic API), or **OpenAI** — switchable at runtime from the dropdown.
 
 ## Architecture
 
@@ -17,41 +19,49 @@ Stream generated audio from a Mac host to an iPhone browser client via WebRTC, w
 │  │            │    │                               │ │
 │  │ Piper TTS  │───▶│  aiohttp server (:8080)       │ │
 │  │ 22kHz→48kHz│    │  ├─ GET /  → index.html       │ │
-│  │ resampling │    │  ├─ GET /ws → WebSocket        │ │
-│  └────────────┘    │  │    ├─ hello / hello_ack    │ │
-│       │            │  │    ├─ webrtc_offer/answer   │ │
-│       ▼            │  │    ├─ start / stop          │ │
-│  ┌────────────┐    │  │    ├─ speak {text}          │ │
-│  │ PCMRing    │    │  │    ├─ mic_start/mic_stop    │ │
-│  │ Buffer     │───▶│  │    └─ transcription {text}  │ │
-│  └────────────┘    │  └─ RTCPeerConnection          │ │
-│                    │     ├─ AudioTrack out (TTS)     │ │
-│  ┌────────────┐    │     └─ AudioTrack in  (mic)     │ │
-│  │ Whisper    │◀───│        └─ buffer → STT          │ │
-│  │ STT (base) │    │                                 │ │
-│  │ 48k→16kHz  │    │                                 │ │
-│  └────────────┘    │                                 │ │
-│                    └───────────────────────────────┘ │
+│  │            │    │  ├─ GET /ws → WebSocket        │ │
+│  │ Whisper STT│◀───│  │    signaling + agent loop   │ │
+│  │ 48kHz→16kHz│    │  └─ RTCPeerConnection          │ │
+│  │            │    │     ├─ AudioTrack out (TTS)     │ │
+│  │ LLM        │◀──▶│     └─ AudioTrack in  (mic)     │ │
+│  │ Claude /   │    │                                 │ │
+│  │ OpenAI /   │    │                                 │ │
+│  │ Ollama     │    │                                 │ │
+│  └────────────┘    └───────────────────────────────┘ │
 └──────────────────────┬───────────────────────────────┘
                        │  WebRTC (UDP)
                        │  via TURN relay or direct
                        │
 ┌──────────────────────▼───────────────────────────────┐
-│  iPhone Safari                                       │
+│  iPhone Safari / Chrome                              │
 │                                                      │
 │  ┌───────────────────────────────────────────────┐   │
 │  │  web/app.js                                   │   │
 │  │  ├─ WebSocket signaling                       │   │
 │  │  ├─ RTCPeerConnection (sendrecv)              │   │
 │  │  ├─ getUserMedia (mic) → send audio track     │   │
-│  │  └─ <audio> element playback                  │   │
+│  │  ├─ Hold-to-talk UI                           │   │
+│  │  └─ Chat bubble conversation display          │   │
 │  └───────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────┘
 ```
 
-### NAT Traversal with TURN
+### Voice Agent Loop
 
-When the server is behind NAT (e.g. a home Mac), direct WebRTC UDP connections from remote clients will fail. A TURN relay solves this:
+```
+User holds button → mic audio streams via WebRTC
+         │
+         ▼
+   Whisper STT (~1-2s) → transcribed text
+         │
+         ▼
+   LLM generate (~0.3-1.5s) → reply text
+         │
+         ▼
+   Piper TTS per sentence → audio queue → WebRTC → speaker
+```
+
+### NAT Traversal with TURN
 
 ```
 iPhone (cellular)                    Twilio TURN                    Mac (behind NAT)
@@ -65,7 +75,59 @@ iPhone (cellular)                    Twilio TURN                    Mac (behind 
        │         via TURN relay         │         via TURN relay         │
 ```
 
-The server fetches ephemeral TURN credentials from Twilio on each connection and sends them to the client in the `hello_ack` message. Both sides use these credentials for ICE negotiation.
+## Quick Start
+
+```bash
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Create .env from template
+cp .env.example .env
+
+# Add your LLM API key (at least one)
+echo 'ANTHROPIC_API_KEY=sk-ant-...' >> .env   # Claude Haiku
+# OR
+echo 'OPENAI_API_KEY=sk-...' >> .env          # GPT-4o-mini
+# OR just use Ollama (free, local):
+brew install ollama && ollama pull llama3.2:3b
+
+# Run the server
+python3 -m gateway.server
+
+# Open in browser
+open http://localhost:8080
+```
+
+## Usage
+
+### Local (Mac browser)
+
+```bash
+bash scripts/test_local.sh
+# Opens http://localhost:8080
+```
+
+### LAN (iPhone on same Wi-Fi)
+
+```bash
+bash scripts/test_lan.sh
+```
+
+Starts HTTPS server with a self-signed cert (required for mic access), detects your LAN IP, and prints a URL + QR code. On your iPhone:
+
+1. Open the `https://192.168.x.x:8080` URL in Safari
+2. Tap through the certificate warning: **Show Details** → **visit this website** → **Visit Website**
+3. Enter the auth token and tap **Connect**
+4. Hold the green button to talk, release to send
+
+### Cellular (iPhone on AT&T / any network)
+
+```bash
+brew install cloudflared   # one-time setup
+bash scripts/test_cellular.sh
+```
+
+Starts a Cloudflare Tunnel providing a public HTTPS URL. Open the `https://xxx.trycloudflare.com` URL on your iPhone. TURN relay (Twilio) is recommended for reliable cellular NAT traversal.
 
 ## Signaling Protocol (WebSocket JSON)
 
@@ -74,51 +136,57 @@ Client                          Server
   │                               │
   │─── hello {token} ───────────▶│   Auth check
   │◀── hello_ack {voices,        │   Voice list + TURN creds
-  │     ice_servers} ─────────────│
+  │     ice_servers,              │   + LLM provider list
+  │     llm_providers} ──────────│
   │                               │
   │─── webrtc_offer {sdp} ──────▶│   Set remote, create answer
   │◀── webrtc_answer {sdp} ──────│   ICE candidates bundled in SDP
   │                               │
-  │─── start {voice_id} ────────▶│   Begin sine wave audio
-  │─── stop ─────────────────────▶│   Stop audio generation
-  │                               │
-  │─── speak {text} ─────────────▶│   TTS → ring buffer → WebRTC
+  │─── set_provider {provider} ─▶│   Switch LLM (claude/openai/ollama)
+  │◀── provider_set {provider} ──│
   │                               │
   │─── mic_start ───────────────▶│   Start buffering mic audio
-  │─── mic_stop ────────────────▶│   Stop buffering → run Whisper STT
-  │◀── transcription {text} ─────│   Transcribed text
+  │◀── transcription {text,      │   Partial transcriptions (every 5s)
+  │     partial:true} ────────────│
+  │─── mic_stop ────────────────▶│   Final STT → LLM → TTS
+  │◀── transcription {text} ─────│   Final transcribed text
+  │◀── agent_thinking ───────────│   LLM is generating
+  │◀── agent_reply {text} ───────│   LLM response text
+  │    (TTS audio plays via WebRTC)
   │                               │
+  │─── stop_speaking ───────────▶│   Interrupt TTS playback
   │─── ping ─────────────────────▶│   Keepalive
   │◀── pong ──────────────────────│
 ```
 
-**Key constraint**: aiortc does NOT support trickle ICE. All ICE candidates are bundled into the SDP answer. The client waits for ICE gathering to complete before sending its offer.
-
 ## Project Structure
 
 ```
-├── engine/                  # Audio generation layer
+├── engine/                  # Audio + AI layer
 │   ├── types.py             # VoiceInfo, AudioChunk dataclasses
 │   ├── adapter.py           # list_voices(), SineWaveGenerator
 │   ├── tts.py               # Piper TTS (text → 48kHz PCM)
-│   └── stt.py               # Whisper STT (48kHz PCM → text)
+│   ├── stt.py               # Whisper STT (48kHz PCM → text)
+│   ├── llm.py               # LLM wrapper (Claude / OpenAI / Ollama)
+│   └── conversation.py      # Conversation history (10-turn window)
 │
 ├── gateway/                 # Server + WebRTC layer
-│   ├── server.py            # aiohttp HTTP/HTTPS + WS server
-│   ├── webrtc.py            # Session, RTCPeerConnection, mic recording
+│   ├── server.py            # aiohttp HTTP/HTTPS + WS + agent loop
+│   ├── webrtc.py            # Session, RTCPeerConnection, mic, TTS queue
 │   ├── turn.py              # Twilio TURN credential fetching
 │   ├── cert.py              # Self-signed HTTPS cert for LAN testing
 │   └── audio/
-│       ├── pcm_ring_buffer.py        # Thread-safe ring buffer
-│       └── webrtc_audio_source.py    # Custom MediaStreamTrack
+│       ├── audio_queue.py           # Thread-safe FIFO for TTS sentences
+│       ├── pcm_ring_buffer.py       # Thread-safe ring buffer (legacy)
+│       └── webrtc_audio_source.py   # Custom MediaStreamTrack
 │
 ├── web/                     # Browser client
-│   ├── index.html           # Mobile-friendly UI
-│   ├── app.js               # WS signaling + WebRTC + playback
-│   └── styles.css           # Mobile CSS with large touch targets
+│   ├── index.html           # Two-screen mobile UI
+│   ├── app.js               # WS signaling + WebRTC + hold-to-talk
+│   └── styles.css           # Mobile-first dark theme
 │
 ├── scripts/                 # Testing & tooling
-│   ├── smoke_test.py        # Headless TTS + STT pipeline test (30 tests)
+│   ├── smoke_test.py        # Headless TTS + STT pipeline test
 │   ├── test_local.sh        # Local browser test
 │   ├── test_lan.sh          # iPhone on same Wi-Fi
 │   ├── test_cellular.sh     # iPhone on cellular (cloudflared tunnel)
@@ -128,9 +196,6 @@ Client                          Server
 ├── docs/
 │   ├── screenshots/         # UI screenshots
 │   └── project-memory/      # Session docs, ADRs, architecture
-│
-├── .github/
-│   └── PULL_REQUEST_TEMPLATE.md
 │
 ├── CLAUDE.md                # AI project guide + memory system rules
 ├── requirements.txt         # Python dependencies
@@ -143,80 +208,12 @@ Client                          Server
 | # | Goal | Status | Acceptance |
 |---|------|--------|------------|
 | 1 | Gateway + Signaling | Done | Open localhost:8080, enter token, see voices list |
-| 2 | WebRTC Negotiation | Done | Offer/answer exchange, ICE completes, "WebRTC connected" in UI |
-| 3 | Sine Wave Streaming | Done | Click Start → hear tone, Stop → silence, switch voice → different frequency |
-| 3b | TURN Relay Support | Done | Twilio TURN credentials, relay ICE candidates, works over cellular |
-| 4a | TTS → WebRTC Pipeline | Done | Type text, click Speak → hear Piper TTS voice through WebRTC |
-| 5 | iPhone Mic → STT → Text | Done | Tap Record → speak → see transcribed text (Whisper STT via WebRTC) |
-
-## Testing
-
-### Smoke Test (headless, no browser)
-
-```bash
-python3 scripts/smoke_test.py
-```
-
-Tests the full pipeline without a browser — 30 tests across 6 areas:
-
-| Suite | What it tests |
-|-------|--------------|
-| TTS synthesize | Piper TTS → valid 48kHz PCM output |
-| PCMRingBuffer | Write/read, zero-padding, overflow, clear |
-| BufferedGenerator | 20ms chunk framing, data integrity, silence on empty |
-| WAV output | Saves `logs/smoke_test.wav`, validates format |
-| STT transcribe | TTS → Whisper round-trip, produces non-empty text |
-| STT empty input | Empty audio returns empty string |
-
-### Local Test (Mac browser)
-
-```bash
-bash scripts/test_local.sh
-```
-
-Starts the server, opens `http://localhost:8080`, tails logs.
-
-### LAN Test (iPhone on same Wi-Fi)
-
-```bash
-bash scripts/test_lan.sh
-```
-
-Starts HTTPS server (self-signed cert for mic access), detects LAN IP, prints QR code.
-
-### Cellular Test (iPhone on AT&T / cellular)
-
-```bash
-bash scripts/test_cellular.sh
-```
-
-Starts a Cloudflare Tunnel (HTTPS), prints QR code. Requires `brew install cloudflared`.
-
-### Test Results (2026-02-14)
-
-| Test | Result |
-|------|--------|
-| `smoke_test.py` | 30/30 PASS |
-| `test_local.sh` | TTS audio heard in Mac browser |
-| `test_lan.sh` | TTS + STT working on iPhone (Wi-Fi, HTTPS) |
-| `test_cellular.sh` | Audio heard on iPhone (cellular) |
-
-## Quick Start
-
-```bash
-# Install Python dependencies
-pip install -r requirements.txt
-
-# Create .env from template
-cp .env.example .env
-# Edit .env to set AUTH_TOKEN and Twilio credentials
-
-# Run the server
-python3 -m gateway.server
-
-# Open in browser
-open http://localhost:8080
-```
+| 2 | WebRTC Negotiation | Done | Offer/answer exchange, ICE completes |
+| 3 | Sine Wave Streaming | Done | Click Start → hear tone |
+| 3b | TURN Relay Support | Done | Twilio TURN, works over cellular |
+| 4a | TTS → WebRTC Pipeline | Done | Type text → hear Piper TTS voice |
+| 5 | iPhone Mic → STT | Done | Record → see transcribed text (Whisper STT) |
+| 6 | Voice Agent Loop | Done | Speak → STT → LLM → TTS → hear reply |
 
 ## Environment Variables
 
@@ -224,45 +221,42 @@ open http://localhost:8080
 |----------|---------|-------------|
 | `PORT` | `8080` | Server listen port |
 | `AUTH_TOKEN` | `devtoken` | Token required in `hello` message |
+| `LLM_PROVIDER` | (auto) | `claude`, `openai`, or `ollama` (auto-detects from API keys) |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key (enables Claude Haiku) |
+| `OPENAI_API_KEY` | — | OpenAI API key (enables GPT-4o-mini) |
+| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model to use |
+| `OLLAMA_MODEL` | `llama3.2:3b` | Ollama model to use |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
+| `SYSTEM_PROMPT` | (built-in) | Custom system prompt for the voice agent |
 | `TWILIO_ACCOUNT_SID` | — | Twilio Account SID (for TURN credentials) |
 | `TWILIO_AUTH_TOKEN` | — | Twilio Auth Token (for TURN credentials) |
-| `ICE_SERVERS_JSON` | `[]` | Manual ICE server fallback (used if Twilio not configured) |
-| `HTTPS` | — | Set to `1` to enable self-signed HTTPS (needed for mic on LAN) |
-| `LOCAL_IP` | `192.168.1.1` | LAN IP for self-signed cert SAN (set by test_lan.sh) |
-
-### Twilio TURN Setup
-
-1. Sign up at https://www.twilio.com
-2. Get **Account SID** and **Auth Token** from the [console dashboard](https://www.twilio.com/console)
-3. Add to `.env`:
-   ```
-   TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-   TWILIO_AUTH_TOKEN=your_auth_token_here
-   ```
-4. The server auto-fetches ephemeral TURN/STUN credentials on each connection (24hr TTL)
+| `ICE_SERVERS_JSON` | `[]` | Manual ICE server fallback |
+| `HTTPS` | — | Set to `1` for self-signed HTTPS (LAN mic access) |
+| `LOCAL_IP` | `192.168.1.1` | LAN IP for self-signed cert SAN |
 
 ## Key Technical Decisions
 
 | Decision | Choice | Why |
 |----------|--------|-----|
 | TTS engine | Piper TTS (ONNX) | Fast offline neural TTS, no API keys needed |
+| TTS buffering | Sentence-level FIFO queue | Split reply into sentences, TTS each, queue for playback. First sentence plays while later ones synthesize. No audio lost (unlike ring buffer). |
+| STT engine | faster-whisper (base, int8) | 4x faster than openai/whisper, CPU mode, ~75MB |
+| LLM provider | Claude / OpenAI / Ollama | Switchable at runtime from mobile UI. Auto-detects from API keys. |
+| Agent loop | Simple: full STT → full LLM → full TTS | ~2-4s latency. Foundation for future streaming pipeline. |
 | Audio sample rate | 48 kHz | Opus codec native rate |
 | Frame size | 960 samples (20 ms) | Matches aiortc `AUDIO_PTIME` |
-| TTS → WebRTC bridge | PCMRingBuffer | Thread-safe: TTS runs in thread pool, WebRTC reads in async loop |
 | Resampling | scipy.signal.resample | Piper outputs 22050Hz, WebRTC needs 48000Hz |
 | ICE strategy | Client waits for gathering complete | aiortc has no trickle ICE |
 | TURN credentials | Twilio NTS, fetched per-connection | Ephemeral creds, no static secrets in client |
-| STT engine | faster-whisper (base, int8) | 4x faster than openai/whisper, CPU mode, ~75MB |
-| STT resampling | 48kHz → 16kHz | Whisper expects 16kHz; uses scipy.signal.resample |
-| Mic direction | sendrecv | Single WebRTC connection for TTS playback + mic capture |
-| LAN HTTPS | Self-signed cert (auto-generated) | getUserMedia requires secure context on non-localhost |
-| Auth | Token in WS `hello` message | Simple, avoids HTTP header complexity |
+| Mobile UI | Two-screen, hold-to-talk | Connect screen → agent screen. Walkie-talkie UX. |
 | Remote access | Cloudflare Tunnel | Free, no domain needed, handles HTTPS + WSS |
 
 ## iOS Safari Notes
 
-- Audio autoplay is blocked until a user gesture — the Start button click triggers `audio.play()`
+- Audio autoplay is blocked until a user gesture — Connect button click triggers `audio.play()`
 - `getUserMedia` requires HTTPS (or localhost) — LAN test uses self-signed cert
+- Hold-to-talk uses `touchstart`/`touchend` events (not `click`) for zero-delay response
 - Uses `<audio>` element (not AudioContext) for maximum mobile compatibility
-- CSS uses large touch targets (min 44px) for iPhone usability
+- CSS uses `100dvh` for proper height with Safari's dynamic toolbar
+- `env(safe-area-inset-bottom)` respects iPhone home indicator area
 - `playsinline` attribute is required for inline audio on iOS

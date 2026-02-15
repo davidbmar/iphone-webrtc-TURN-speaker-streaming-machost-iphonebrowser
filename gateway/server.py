@@ -9,10 +9,12 @@ from pathlib import Path
 from aiohttp import web
 from dotenv import load_dotenv
 
-from engine.adapter import list_voices
-from gateway.turn import fetch_twilio_turn_credentials
+load_dotenv()  # Must be before engine imports so they see .env vars
 
-load_dotenv()
+from engine.adapter import list_voices
+from engine.conversation import ConversationHistory
+from engine.llm import generate as llm_generate, is_configured as llm_is_configured, get_provider_name, available_providers
+from gateway.turn import fetch_twilio_turn_credentials
 
 log = logging.getLogger("gateway")
 
@@ -46,6 +48,9 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 
     session = None  # Will hold WebRTC Session once created
     ice_servers = []  # Populated on hello, shared with WebRTC session
+    conversation = ConversationHistory()
+    agent_mode = llm_is_configured()
+    llm_provider = ""  # Empty = use default from env
 
     async for raw in ws:
         if raw.type != web.WSMsgType.TEXT:
@@ -77,6 +82,8 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 "type": "hello_ack",
                 "voices": voices,
                 "ice_servers": ice_servers,
+                "llm_providers": available_providers(),
+                "llm_default": get_provider_name(),
             })
 
         elif msg_type == "webrtc_offer":
@@ -113,19 +120,54 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             else:
                 await ws.send_json({"type": "error", "message": "No WebRTC session"})
 
+        elif msg_type == "set_provider":
+            provider = msg.get("provider", "")
+            if provider in ("claude", "openai", "ollama"):
+                llm_provider = provider
+                log.info("LLM provider switched to: %s", provider)
+                await ws.send_json({"type": "provider_set", "provider": provider})
+            else:
+                await ws.send_json({"type": "error", "message": f"Unknown provider: {provider}"})
+
+        elif msg_type == "stop_speaking":
+            if session:
+                session.stop_speaking()
+                log.info("TTS playback stopped by user")
+
         elif msg_type == "mic_start":
             if session:
-                session.start_recording()
-                log.info("Mic recording started")
+                async def on_transcription(text, partial):
+                    await ws.send_json({"type": "transcription", "text": text, "partial": partial})
+                    log.info("Partial transcription: %r", text[:80] if text else "")
+                session.start_recording(on_transcription=on_transcription)
+                log.info("Mic recording started (live)")
             else:
                 await ws.send_json({"type": "error", "message": "No WebRTC session"})
 
         elif msg_type == "mic_stop":
             if session:
-                log.info("Mic recording stopping, running STT...")
+                log.info("Mic recording stopping, final STT...")
                 text = await session.stop_recording()
-                await ws.send_json({"type": "transcription", "text": text})
-                log.info("Transcription sent: %r", text[:80] if text else "")
+                await ws.send_json({"type": "transcription", "text": text, "partial": False})
+                log.info("Final transcription: %r", text[:80] if text else "")
+
+                # Agent mode: STT → LLM → TTS
+                if agent_mode and text.strip():
+                    conversation.add_turn("user", text)
+                    await ws.send_json({"type": "agent_thinking"})
+                    active_provider = llm_provider or get_provider_name()
+                    log.info("Agent thinking (provider=%s)...", active_provider)
+                    try:
+                        reply = await llm_generate(
+                            conversation.system, conversation.get_messages(), llm_provider
+                        )
+                        conversation.add_turn("assistant", reply)
+                        await ws.send_json({"type": "agent_reply", "text": reply})
+                        log.info("Agent reply: %r", reply[:80])
+                        await session.speak_text(reply)
+                    except Exception as e:
+                        log.error("LLM error: %s", e)
+                        await ws.send_json({"type": "error", "message": f"LLM error: {e}"})
             else:
                 await ws.send_json({"type": "error", "message": "No WebRTC session"})
 
