@@ -19,4 +19,11 @@
     "date": "2026-02-15",
     "file": "S-2026-02-15-1749-rich-model-selection.md"
   }
+,
+  {
+    "sessionId": "S-2026-02-16-0420-web-search-integration",
+    "title": "Web Search Integration with Tavily/Brave/DuckDuckGo Fallback",
+    "date": "2026-02-16",
+    "file": "S-2026-02-16-0420-web-search-integration.md"
+  }
 ]
